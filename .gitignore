@@ -35,7 +35,9 @@ captures/
 # Intellij
 *.iml
 .idea/workspace.xml
+.idea/
 
 # Keystore files
 *.jks
 node_modules/
+bower_components/
