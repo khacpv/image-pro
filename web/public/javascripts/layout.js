@@ -1,3 +1,7 @@
 var process = function(){
-    console.log('test');
+    var name = $('#name').val();
+
+    $.post( "/native", {name:name}, function( data ) {
+        $( "#result" ).html( data.value );
+    });
 };
