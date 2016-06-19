@@ -14,3 +14,9 @@
  $node ./bin/www
 
 ### deploy to openshift.redhat.com
+ $git add * 
+ $git commit & push
+  
+#### if have any error, try to log:
+ $rhc ssh -a image
+ $tail app-root/logs/nodejs.log
