@@ -5,6 +5,5 @@ cd ./native
 echo compile successfuly to /web/bin/myLib.o
 
 echo starting web server
-cd ../web
 node ./bin/www
 echo server started

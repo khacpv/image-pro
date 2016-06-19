@@ -1,7 +1,19 @@
 {
-  "name": "OpenShift-Sample-App",
-  "version": "1.0.0",
+  "name": "web",
+  "version": "0.0.0",
   "description": "OpenShift Sample Application",
+  "private": true,
+  "main": "./bin/www",
+  "dependencies": {
+    "body-parser": "^1.15.1",
+    "cookie-parser": "~1.4.3",
+    "debug": "~2.2.0",
+    "express": "~4.13.4",
+    "jade": "~1.11.0",
+    "less-middleware": "1.0.x",
+    "morgan": "~1.7.0",
+    "serve-favicon": "~2.3.0"
+  },
   "keywords": [
     "OpenShift",
     "Node.js",
@@ -9,27 +21,13 @@
     "openshift"
   ],
   "author": {
-    "name": "OpenShift",
-    "email": "ramr@example.org",
-    "url": "http://www.openshift.com/"
+    "name": "khacpv",
+    "email": "khacpv@gmail.com",
+    "url": "http://image-oic.com"
   },
-  "homepage": "http://www.openshift.com/",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/openshift/origin-server"
-  },
-
+  "homepage": "http://image-oic.com",
   "engines": {
     "node": ">= 0.6.0",
     "npm": ">= 1.0.0"
-  },
-
-  "dependencies": {
-    "express": "~3.4.4"
-  },
-  "devDependencies": {},
-  "bundleDependencies": [],
-
-  "private": true,
-  "main": "server.js"
+  }
 }
