@@ -14,7 +14,7 @@ console.log('Your output: ' + output);
 
 console.log(myLib.getString("pham khac"));
 
-//module.exports = myLib;
+module.exports = myLib;
 
 var express = require('express');
 var app = express();
