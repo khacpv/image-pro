@@ -4,7 +4,7 @@
   "description": "OpenShift Sample Application",
   "private": true,
   "scripts": {
-    "install": "npm install -g ffi"
+    "install": "bower install"
   },
   "main": "./bin/www",
   "dependencies": {
