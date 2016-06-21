@@ -1,5 +1,4 @@
-//var ffi = require('ffi');
-//
+var ffi = require('ffi');
 
 var myLib;
 //var myLib = ffi.Library('./bin/myLib', {
