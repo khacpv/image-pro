@@ -1,7 +1,7 @@
 var ffi = require('ffi');
 
 var myLib;
-myLib = ffi.Library('../bin/myLib', {
+myLib = ffi.Library('./bin/myLib', {
     'factorial': ['uint64', ['int']],
     'getString': ['String',['String']]
 });
