@@ -1,9 +1,10 @@
 var ffi = require('ffi');
 
-var myLib = ffi.Library('./bin/myLib', {
-    'factorial': ['uint64', ['int']],
-    'getString': ['String',['String']]
-});
+var myLib;
+//myLib = ffi.Library('./bin/myLib', {
+//    'factorial': ['uint64', ['int']],
+//    'getString': ['String',['String']]
+//});
 //
 //if (process.argv.length < 3) {
 //    console.log('default value: 5');

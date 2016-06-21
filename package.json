@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "description": "OpenShift Sample Application",
   "private": true,
+  "scripts":{
+    "install":"gcc -shared -fpic ./native/clib/main.c -o ./bin/myLib.so"
+  },
   "main": "./bin/www",
   "dependencies": {
     "body-parser": "^1.15.1",
