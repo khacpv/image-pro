@@ -22,3 +22,6 @@ To run the example:
 $ node native.js 35
 Your output: 6399018521010896896
 ```
+
+FFI only run with node 4.1 & ffi2.0 & ref1.3.2
+You should install match version (nvm for MACOS)
