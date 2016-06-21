@@ -4,7 +4,7 @@
   "description": "OpenShift Sample Application",
   "private": true,
   "scripts": {
-    "install": "bower install"
+    "install": "echo build successfuly"
   },
   "main": "./bin/www",
   "dependencies": {
