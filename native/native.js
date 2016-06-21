@@ -1,4 +1,4 @@
-var ffi = require('ffi');
+var ffi = require('node-ffi');
 
 var myLib = ffi.Library('./bin/myLib', {
     'factorial': ['uint64', ['int']],
