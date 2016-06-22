@@ -1,5 +1,5 @@
 #!/bin/bash
-
+# see more here: http://danilko.blogspot.com/2014/07/openshift-git-history-clean-up.html
 # change repo name as you want
 remote_repo=openshift
 
