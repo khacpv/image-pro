@@ -6,3 +6,6 @@ block content
     input#name(type='text', name='inputStr', placeholder='test')
     button(onclick='process()') Click
     p#result result here
+    ul
+        each val, index in apps
+            li= (index+1) + ': ' + val.title

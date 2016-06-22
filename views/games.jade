@@ -1,0 +1,8 @@
+extends layout
+block content
+    h1= title
+    p Welcome to #{title}
+    h2 List games:
+    ul
+        each val, index in apps
+            li= (index + 1) + ': ' + val.title + ':' + val.description

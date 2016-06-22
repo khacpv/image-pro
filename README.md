@@ -33,7 +33,13 @@
 ````
 
 #### remote git:
-ssh://5766b0f50c1e6601a800014e@image-oic.rhcloud.com/~/git/image.git/
+ ssh://5766b0f50c1e6601a800014e@image-oic.rhcloud.com/~/git/image.git/
 
 #### watch using space memory
- rhc show-app image --gears quota
+ $rhc show-app image --gears quota
+
+#### port forwarding (use remote database on local computer)
+ $rhc port-forward image
+ 
+#### root directory
+ /var/lib/openshift/5766b0f50c1e6601a800014e
