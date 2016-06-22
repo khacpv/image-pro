@@ -1,0 +1,8 @@
+extends layout
+
+block content
+    h1= title
+    p Welcome to #{title}
+    input#name(type='text', name='inputStr', placeholder='test')
+    button(onclick='process()') Click
+    p#result result here
