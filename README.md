@@ -23,3 +23,6 @@
 
 #### remote git:
 ssh://5766b0f50c1e6601a800014e@image-oic.rhcloud.com/~/git/image.git/
+
+#### watch using space memory
+ rhc show-app image --gears quota
