@@ -44,4 +44,4 @@ current_date=`date`;
 
 git commit -m "Force clean up history $current_date";
 
-git push origin $remote_repo --force;
+git push $remote_repo master --force;
