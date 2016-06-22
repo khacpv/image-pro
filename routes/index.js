@@ -1,5 +1,5 @@
 var express = require('express');
-var mongo = require('../mongodb/Mongo');
+var mongo = require('../mongodb/mongo');
 var router = express.Router();
 
 /* GET home page. */
