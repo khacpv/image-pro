@@ -23,8 +23,9 @@ EXPORT uint64_t factorial(int max) {
 }
 
 EXPORT char* getString(char* input) {
-    char* test = "welcome: ";
+    char* test = "welcome: <b>";
     test = concat(test, input);
+    test = concat(test, "</b> from C++");
     return test;
 }
 
