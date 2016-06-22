@@ -20,3 +20,6 @@
 #### if have any error, try to log:
  $rhc ssh -a image
  $tail app-root/logs/nodejs.log
+
+#### remote git:
+ssh://5766b0f50c1e6601a800014e@image-oic.rhcloud.com/~/git/image.git/
