@@ -5,11 +5,6 @@ var logger = require('morgan');
 var cookieParser = require('cookie-parser');
 var bodyParser = require('body-parser');
 
-var routes = require('./routes/index');
-var users = require('./routes/users');
-var games = require('./routes/games');
-var native = require('./routes/native');
-
 var app = express();
 
 // view engine setup
@@ -26,10 +21,25 @@ app.use(require('less-middleware')(path.join(__dirname, 'public')));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/bower',  express.static(__dirname + '/bower_components'));
 
+// index
+var routes = require('./routes/index');
 app.use('/', routes);
+
+// users
+var users = require('./routes/users');
 app.use('/users', users);
+
+// native
+var native = require('./routes/native');
 app.use('/native', native);
+
+// games
+var games = require('./routes/games');
 app.use('/games', games);
+
+// upndown
+var upndown = require('./routes/games/upndown');
+app.use('/up_down', upndown);
 
 // catch 404 and forward to error handler
 app.use(function(req, res, next) {
