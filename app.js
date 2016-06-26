@@ -39,6 +39,7 @@ app.use('/games', games);
 
 // upndown
 var upndown = require('./routes/games/upndown');
+app.use('/upndown', upndown);
 app.use('/up_down', upndown);
 
 // catch 404 and forward to error handler

@@ -1,21 +1,136 @@
 @import "reset.less";
 @import "sprites.less";
+@import "color.less";
 
-.full_screen {
-  width: 100%;
-  height: 100%;
+body {
+  font: 14px "Lucida Grande", Helvetica, Arial, sans-serif;
+  background: @white;
+}
+
+a {
+  color: #00B7FF;
+}
+
+.hide {
+  display: none;
+}
+
+.absolute {
   position: absolute;
-  background-color: #ff5454;
+}
+
+.relative {
+  position: relative;
+}
+
+.click {
+  transform: scale(1, 1);
+  transition-duration: 200ms;
+  &:hover {
+    transform: scale(1.001, 1.001);
+  }
+  &:active {
+    transform: scale(0.998, 0.998);
+  }
+}
+
+.main_container {
+  width: 100%;
+  height: 680px;
+  position: absolute;
+  background-color: @red_1;
   top: 0;
   left: 0;
   right: 0;
   bottom: 0;
 }
 
-body {
-  font: 14px "Lucida Grande", Helvetica, Arial, sans-serif;
+.center_content {
+  position: relative;
+  width: 850px;
+  height: 620px;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 150px;
 }
 
-a {
-  color: #00B7FF;
+.android {
+  background: url("../images/nexus_6p.png") 0 0;
+  width: 250px;
+  height: 480px;
+  background-size: 250px 480px;
+  position: absolute;
+  left: 10%;
+  top: 0;
+}
+
+.android-content {
+  background-color: #151515;
+  top: 48px;
+  left: 12px;
+  width: 225px;
+  height: 385px;
+  position: absolute;
+}
+
+.screenshoot_1 {
+  background: url("../images/screenshoot_1.png") 0 0;
+  background-size: 100% 100%;
+  height: 100%;
+}
+
+.content {
+  background: none;
+  color: #ffffff;
+  position: absolute;
+  left: 45%;
+  top: 20px;
+  line-height: 2;
+}
+
+.text-large {
+  font-size: 3em;
+  font-weight: bold;
+
+}
+
+.text-normal {
+  font-size: 2.5em;
+  font-weight: normal;
+  line-height: 1.5;
+}
+
+.content-sub {
+  margin-top: 30px;
+  margin-bottom: 30px;
+}
+
+ul {
+  margin-left: 20px;
+  list-style: circle;
+
+  li {
+    margin-bottom: 10px;
+    font-size: 1.2em;
+    content: "• ";
+    padding-left: 1em;
+    text-indent: -.7em;
+  }
+}
+
+.ggplay {
+  margin-top: 20px;
+
+  img {
+    box-shadow: 0 0 5px #888888;
+    transition-duration: 200ms;
+
+    &:hover {
+      box-shadow: 2px 2px 6px @red_2;
+    }
+    &:active {
+      box-shadow: 0 0 6px @red_2;
+    }
+  }
+
 }
