@@ -2,52 +2,87 @@ extends ../layout
 img(src='/images/sprites.png' style='display:none;')
 img(src='/images/screenshoot_1.jpg' style='display:none;')
 block content
-   div.main_container
-      div.icon_container(style='opacity:0.5;').hide
-         div.icon_0_0(style='top:0;left:0px;')
-         div.icon_1_0(style='top:0;left:160px;')
-         div.icon_2_0(style='top:0;left:320px;')
-         div.icon_3_0(style='top:0;left:480px;')
-         div.icon_4_0(style='top:0;left:640px;')
-         div.icon_5_0(style='top:0;left:800px;')
-         div.icon_6_0(style='top:0;left:960px;')
-         div.icon_7_0(style='top:0;left:1120px;')
-         div.icon_8_0(style='top:0;left:1280px;')
-         div.icon_9_0(style='top:0;left:1440px;')
-      div.icon_container.hide
-         div.icon_0_1(style='top:160px;left:0px;')
-         div.icon_1_1(style='top:160px;left:160px;')
-         div.icon_2_1(style='top:160px;left:320px;')
-         div.icon_3_1(style='top:160px;left:480px;')
-         div.icon_4_1(style='top:160px;left:640px;')
-         div.icon_5_1(style='top:160px;left:800px;')
-         div.icon_6_1(style='top:160px;left:960px;')
-         div.icon_7_1(style='top:160px;left:1120px;')
-         div.icon_8_1(style='top:160px;left:1280px;')
-         div.icon_9_1(style='top:160px;left:1440px;')
-      div.icon_container.hide
-         div.icon_0_2(style='top:320px;left:0px;')
-         div.icon_1_2(style='top:320px;left:160px;')
-         div.icon_2_2(style='top:320px;left:320px;')
-         div.icon_3_2(style='top:320px;left:480px;')
-         div.icon_4_2(style='top:320px;left:640px;')
-         div.icon_5_2(style='top:320px;left:800px;')
-         div.icon_6_2(style='top:320px;left:960px;')
-         div.icon_7_2(style='top:320px;left:1120px;')
-         div.icon_8_2(style='top:320px;left:1280px;')
-         div.icon_9_2(style='top:320px;left:1440px;')
-      div.center_content
-         div.android.click
-            div.android-content
-               div.screenshoot_1
-         div.content
-            h1.text-large UP and DOWN
-            p.text-normal.content-sub Connecting people through <br> shared interests
-            ul
-               li Topics for every interest
-               li Play against friends in real time
-               li Discover like-minded people
-               li And it's FREE!
-            div.ggplay
-               a(href='https://play.google.com/store/apps/details?id=com.oic.game.merillo&utm_source=global_co&utm_medium=prtnr&utm_content=Mar2515&utm_campaign=PartBadge&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1')
-                  img(src='/images/ggplay.png' alt='Get it on Google Play' width=170 height=50)
+    div.main_container
+        div.center_content
+            div.android.click
+                div.android-content
+                    div.screenshoot_1
+            div.content
+                h1.text-large UP and DOWN
+                p.text-normal.content-sub Connecting people through <br> shared interests
+                ul
+                    li Topics for every interest
+                    li Play against friends in real time
+                    li Discover like-minded people
+                    li And it's FREE!
+                div.ggplay
+                    a(href='https://play.google.com/store/apps/details?id=com.oic.game.merillo&utm_source=global_co&utm_medium=prtnr&utm_content=Mar2515&utm_campaign=PartBadge&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1')
+                        img(src='/images/ggplay.png' alt='Get it on Google Play' width=170 height=50)
+        div#icon_wrapper_50.icon_container.opacity_01
+            div.icon_0_2.icon_base_50(style='')
+            div.icon_1_2.icon_base_50(style='')
+            div.icon_2_2.icon_base_50(style='')
+            div.icon_3_2.icon_base_50(style='')
+            div.icon_4_2.icon_base_50(style='')
+            div.icon_5_2.icon_base_50(style='')
+            div.icon_6_2.icon_base_50(style='')
+            div.icon_7_2.icon_base_50(style='')
+            div.icon_8_2.icon_base_50(style='')
+            div.icon_9_2.icon_base_50(style='')
+        div#icon_wrapper_100.icon_container.opacity_06
+            div.icon_0_1.icon_base_100(style='')
+            div.icon_1_1.icon_base_100(style='')
+            div.icon_2_1.icon_base_100(style='')
+            div.icon_3_1.icon_base_100(style='')
+            div.icon_4_1.icon_base_100(style='')
+            div.icon_5_1.icon_base_100(style='')
+            div.icon_6_1.icon_base_100(style='')
+            div.icon_7_1.icon_base_100(style='')
+            div.icon_8_1.icon_base_100(style='')
+            div.icon_9_1.icon_base_100(style='')
+        div#icon_wrapper_150.icon_container
+            div.icon_0_0.icon_base_150(style='')
+            div.icon_1_0.icon_base_150(style='')
+            div.icon_2_0.icon_base_150(style='')
+            div.icon_3_0.icon_base_150(style='')
+            div.icon_4_0.icon_base_150(style='')
+            div.icon_5_0.icon_base_150(style='')
+            div.icon_6_0.icon_base_150(style='')
+            div.icon_7_0.icon_base_150(style='')
+            div.icon_8_0.icon_base_150(style='')
+            div.icon_9_0.icon_base_150(style='')
+        script(type='text/javascript').
+            var elem50 = document.getElementById('icon_wrapper_50');
+            var elem100 = document.getElementById('icon_wrapper_100');
+            var elem150 = document.getElementById('icon_wrapper_150');
+
+            window.addEventListener("mousemove", mouseMove);
+
+            function mouseMove(event) {
+                var windowWidth = window.innerWidth;
+                var windowHeight = window.innerHeight;
+                var deltaX = (event.clientX - windowWidth / 2) / windowWidth;
+                var deltaY = (event.clientY - windowHeight / 2) / windowHeight;
+                var transX, transY;
+
+                for (i = 0; i < elem50.childNodes.length; i++) {
+                    transX = deltaX * 5;
+                    transY = deltaY * 5;
+                    elem50.childNodes[i].style = 'transform: translate3d(' + transX + 'px, ' + transY + 'px, 0px);';
+                }
+
+                for (i = 0; i < elem100.childNodes.length; i++) {
+                    transX = deltaX * 10;
+                    transY = deltaY * 10;
+                    elem100.childNodes[i].style = 'transform: translate3d(' + transX + 'px, ' + transY + 'px, 0px);';
+                }
+
+                for (i = 0; i < elem150.childNodes.length; i++) {
+                    transX = deltaX * 35;
+                    transY = deltaY * 35;
+                    elem150.childNodes[i].style = 'transform: translate3d(' + transX + 'px, ' + transY + 'px, 0px);';
+                }
+            }
+        div.copyright Copyright ©
+            a(href='oicmap.com') oicmap.com
+            span   2016-2017. All rights reserved.
