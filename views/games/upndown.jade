@@ -80,7 +80,8 @@ block content
                 for (i = 0; i < elem150.childNodes.length; i++) {
                     transX = deltaX * 35;
                     transY = deltaY * 35;
-                    elem150.childNodes[i].style = 'transform: translate3d(' + transX + 'px, ' + transY + 'px, 0px);';
+                    elem150.childNodes[i].style = 'transform: translate3d(' + transX + 'px, ' + transY + 'px, 0px);'
+                        + '-webkit-transform: translate3d(' + transX + 'px, ' + transY + 'px, 0px);';
                 }
             }
         div.copyright Copyright ©
