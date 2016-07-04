@@ -1,11 +1,12 @@
 var express = require('express');
 var nativeLib = require('../native/native');
-var imgPro = require('../native/img_pro/imgpro');
+//var imgPro = require('../native/img_pro/imgpro');
 var router = express.Router();
 
 /* GET native */
 router.get('/', function(req, res, next){
-    var result = imgPro.process("./public/images/ggplay.png");
+    var result = 'test';
+    //result = imgPro.process("./public/images/ggplay.png");
     res.json({face_detect: result});
 });
 
