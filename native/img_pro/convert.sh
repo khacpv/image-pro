@@ -1,4 +1,4 @@
-# /bin/bash
+#!/usr/bin/env bash
 IN=libfacedet.a
 OUT=libfacedet.dylib
 # gcc -dynamiclib -undefined suppress -flat_namespace $IN -o $OUT
