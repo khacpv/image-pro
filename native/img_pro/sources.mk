@@ -16,7 +16,7 @@ C++_DEPS :=
 OBJS := 
 C_DEPS := 
 CC_DEPS := 
-ARCHIVES := 
+LIBRARIES := 
 CPP_DEPS := 
 CXX_DEPS := 
 C_UPPER_DEPS := 
@@ -24,7 +24,6 @@ C_UPPER_DEPS :=
 # Every subdirectory with source files must be described here
 SUBDIRS := \
 zlib \
-. \
 libpng \
 libjpeg \
 all \
