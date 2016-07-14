@@ -7,4 +7,6 @@ router.get('/', function (req, res, next) {
     res.render('games/faster5', {title: 'Faster5'})
 });
 
+
+
 module.exports = router;

@@ -44,8 +44,8 @@ app.use('/up_down', upndown);
 
 // faster5
 var faster5 = require('./routes/faster5/faster5');
-app.use('/faster5', upndown);
-app.use('/faster_5', upndown);
+app.use('/faster5', faster5);
+app.use('/faster_5', faster5);
 
 // catch 404 and forward to error handler
 app.use(function(req, res, next) {
