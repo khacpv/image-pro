@@ -10,14 +10,13 @@ var logic = require('./logic');
 var router = express.Router();
 
 router.get('/topic', function (req, res, next) {
-    logic.getTopics(function (topics) {
+    logic.getTopics(function (err, topics) {
         res.json(topics);
     });
 });
 
 router.get('/topic/:id', function (req, res, next) {
     logic.getTopicById(req.params.id, function(err, data){
-        console.log(err);
         if(err){
             res.status(err);
             next();
