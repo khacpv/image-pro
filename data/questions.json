@@ -1,0 +1,57 @@
+[
+  {
+    "id": 1,
+    "question": "1+1=?",
+    "answers": [
+      "2",
+      "3",
+      "4",
+      "5"
+    ],
+    "answer_right": 0
+  },
+  {
+    "id": 2,
+    "question": "4+9=?",
+    "answers": [
+      "12",
+      "13",
+      "14",
+      "15"
+    ],
+    "answer_right": 1
+  },
+  {
+    "id": 3,
+    "question": "How many legs of duck?",
+    "answers": [
+      "2",
+      "4",
+      "6",
+      "8"
+    ],
+    "answer_right": 0
+  },
+  {
+    "id": 4,
+    "question": "What's the largest country?",
+    "answers": [
+      "Viet nam",
+      "America",
+      "Russia",
+      "China"
+    ],
+    "answer_right": 2
+  },
+  {
+    "id": 5,
+    "question": "War and Peace is written by who?",
+    "answers": [
+      "Hemingway",
+      "O'Henry",
+      "Tara",
+      "Left ton's toi"
+    ],
+    "answer_right": 3
+  }
+]

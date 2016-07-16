@@ -43,3 +43,6 @@
  
 #### root directory
  /var/lib/openshift/5766b0f50c1e6601a800014e
+ 
+#### set DEV/PROD mode
+ export NODE_ENV=production (or development)
