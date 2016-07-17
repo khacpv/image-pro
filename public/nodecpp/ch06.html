@@ -1,0 +1,738 @@
+<!doctype html><html><head>
+
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/styles/default.min.css">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/highlight.min.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+  <style>
+      .markdown-body {
+          box-sizing: border-box;
+          min-width: 200px;
+          max-width: 980px;
+          margin: 0 auto;
+          padding: 45px;
+      }
+      .highlight {
+        background-color:red;
+        background-color:#f1c40f;
+        padding:1em;
+      }
+  </style>
+<title>C++ and Node.js Integration</title>
+</head><body class='markdown-body'>
+<p><a href="index.html">Table of Contents</a></p>
+<h1 id="chapter-6-native-abstractions-for-node-nan-">Chapter 6 - Native Abstractions for Node (NAN)</h1>
+<p>Throughout the first five chapters of this book we&#39;ve been operating under the assumption that the addons we are creating target Node.js versions 0.12 through 6.0. That&#39;s a pretty broad version set, but there are earlier versions of Node.js where our addons won&#39;t compile/work. This can be a significant issue when using cloud hosting services, which might be using an earlier version of Node.js. It also poses problems when distributing your addons over <code>npm</code> - since your addon can&#39;t be distributed to all users.</p>
+<p>Why won&#39;t our addons work in earlier versions? Why should we worry that future versions of Node.js could break our addons? The answer is that it&#39;s not Node.js that is defining the API for which we inter-operate with JavaScript, it&#39;s V8! The V8 API has changed over time, and there is no guarantee that it won&#39;t again. While the V8 developers do attempt to keep the API stable, frequently there will be some (perhaps small) breaking changes introduced in each new release. As new V8 releases are moved into Node.js releases, we run the constant danger of our addons needing to be modified.</p>
+<p>Given the prevalence of Node.js runtime versions (many applications are still running on Node.js v0.10, v0.12, v4.0, etc.), there is a real need for some form of abstraction, so that we might target a more stable (and clean!) API. <a href="https://github.com/nodejs/nan">Native Abstractions for Node (NAN)</a> is exactly that.</p>
+<p>NAN is governed by the io.js working group and aims to provide a set of macros and utilities that achieve two goals: 1) maintaining a stable API across all Node.js versions, and 2) providing a set of utilities to help simplify some of the most difficult parts of the Node.js and V8 API&#39;s (such as asynchronous addon development). While developing with NAN is only required if you intend to support addons across v0.10 - 4.0 of Node.js, it is a good idea to become familiar with it and use it on any project where you expect to have wide variety of users over a long period of time.</p>
+<p>It should be noted that NAN is <em>not</em> a high level API. While there are few utilities to simplify asynchronous addon development, the majority of NAN simply provides replacement macro calls for standard V8 operations, such as creating new primitives/objects in the JavaScript heap, defining exported functions, and Node.js operations like object wrapping. The underlying rules of V8 programming which we&#39;ve learned so far all still apply - NAN simply provides a slightly different API for doing the same things we&#39;ve done before.</p>
+<p>In this chapter, I&#39;ll move quickly to show the corresponding &quot;NAN way&quot; of doing the things we&#39;ve accomplished in Chapters 1-5. In later chapters, we&#39;ll use NAN nearly exclusively - as it&#39;s extremely helpful for complex addon development and makes a lot of sense when publicly publishing addons to <code>npm</code>.</p>
+<p>All of the code for this chapter is available in full in the <code>nodecpp-demo</code> repository at <a href="https://github.com/freezer333/nodecpp-demo">https://github.com/freezer333/nodecpp-demo</a>, under the &quot;Conversions_NAN&quot;, &quot;primes&quot;, and &quot;ObjectWrap_NAN&quot; sections.</p>
+<h2 id="basic-functionality">Basic Functionality</h2>
+<p>To demonstrate simple functionality, let&#39;s revisit the addon examples from Chapter 2, specifically where we passed primitives and objects/arrays to and from JavaScript and C++. Here&#39;s the function we created within the addon:</p>
+<pre><code class="lang-cpp">// adds 42 to the number passed and returns result
+NODE_SET_METHOD(exports, &quot;pass_number&quot;, PassNumber);
+
+// adds 42 to the integer passed and returns result
+NODE_SET_METHOD(exports, &quot;pass_integer&quot;, PassInteger);
+
+// reverses the string passed and returns the result
+NODE_SET_METHOD(exports, &quot;pass_string&quot;, PassString);
+
+// nots the boolean passed and returns the result
+NODE_SET_METHOD(exports, &quot;pass_boolean&quot;, PassBoolean);
+
+// extracts the x/y numeric properties in object 
+// passed to it and return a new object with sum
+// and product
+NODE_SET_METHOD(exports, &quot;pass_object&quot;, PassObject);
+
+// increments each numeric value in the input array, then returns
+// an array a with a[0] equal to input[0]+1, a[1] equal to the 
+// &quot;none_index&quot; property defined on the input array, and a[2] equal
+// to input[2]+1.
+NODE_SET_METHOD(exports, &quot;increment_array&quot;, IncrementArray);
+</code></pre>
+<p>These example functions were basic, but they allowed us to see all the typical use cases of V8 variables. Now let&#39;s create a new addon, with the same functionality, only using NAN instead. We&#39;ll examine each one side by side, so we can get a really clear picture on the differences between the raw V8 API and NAN&#39;s.</p>
+<h3 id="build-setup">Build setup</h3>
+<p>Before we can start, we need to configure our addon to use NAN. When creating an addon using NAN, NAN becomes a dependency of your module. Thus, within the <code>package.json</code> file you must declare NAN as a dependency - <code>$ npm install --save nan</code>.</p>
+<p>Unlike most modules you install with <code>npm</code> however, doing the install does not install a JavaScript package, it simply downloads the C++ (mostly headers) distribution of NAN. You will not need to reference NAN from JavaScript - but you will need to reference it from your C++ code, specifically by including <code>nan.h</code>.</p>
+<p>To get the dependencies into your addon, we add a bit of <code>node-gyp</code> magic into our <code>binding.gyp</code> file:</p>
+<pre><code class="lang-javascript">&quot;include_dirs&quot; : [
+    &quot;&lt;!(node -e \&quot;require(&#39;nan&#39;)\&quot;)&quot;
+]
+</code></pre>
+<p>This directive will result in the <code>nan</code> module&#39;s header files being on the build path when we compile our C++ addon.</p>
+<h3 id="creating-functions">Creating functions</h3>
+<p>Let&#39;s start by implementing the most simple function in our example - <code>pass_number</code>. We&#39;ll create a folder to contain our addon, create a package.json, install NAN by doing an <code>npm install nan --save</code>, and configure the following <code>binding.gyp</code> file:</p>
+<pre><code class="lang-javascript">{
+  &quot;targets&quot;: [
+    {
+      &quot;target_name&quot;: &quot;basic_nan&quot;,
+      &quot;sources&quot;: [ &quot;basic_nan.cpp&quot; ], 
+      &quot;include_dirs&quot; : [
+        &quot;&lt;!(node -e \&quot;require(&#39;nan&#39;)\&quot;)&quot;
+      ]
+    }
+  ]
+}
+</code></pre>
+<p>We&#39;ll now create <code>basic_nan.cpp</code> and setup our addon.</p>
+<pre><code class="lang-cpp">#include &lt;nan.h&gt;
+
+using namespace Nan;
+using namespace v8;
+
+NAN_METHOD(PassNumber) {
+    // do nothing ... for now.    
+}
+
+NAN_MODULE_INIT(Init) {
+    Nan::Set(target, 
+      New&lt;String&gt;(&quot;pass_number&quot;).ToLocalChecked(),
+      GetFunction(New&lt;FunctionTemplate&gt;(PassNumber))
+       .ToLocalChecked());
+}
+
+NODE_MODULE(basic_nan, Init)
+</code></pre>
+<p>Compare this to the setup for the same function using the standard V8 API:</p>
+<pre><code class="lang-cpp">#include &lt;node.h&gt;
+
+using namespace v8;
+
+void PassNumber(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    // do nothing ... for now.    
+}
+
+void Init(Local&lt;Object&gt; exports) {
+  NODE_SET_METHOD(exports, &quot;pass_number&quot;, PassNumber);
+}
+
+NODE_MODULE(basic_nan, Init)
+</code></pre>
+<p>Let&#39;s start at the very bottom actually - notice the <code>NODE_MODULE</code> command is exactly the same. <code>NODE_MODULE</code> is a macro already - NAN need not wrap it to preserve compatibility across Node.js version. As will be a pattern with NAN, the authors haven&#39;t invented new ways of doing things unless there is reason to believe API changes in V8/Node will/have created problems.</p>
+<p>Working our way up, we have the <code>Init</code> method. In the pure V8 approach, we have a specific call signature for the initialization function used in <code>NODE_MODULE</code> - it must have a return type of <code>void</code> and accept <code>exports</code> (and the module, optionally). In NAN, a macro is provided called <code>NAN_MODULE_INIT</code>. The macro is parameterized, so we still get to name the initialization routine (<code>Init</code>), however the macro shields us from any inconsistencies to the call signature.</p>
+<p>Inside <code>Init</code> we start seeing some major changes, and oddly it actually gets slightly more complicated with NAN! Instead of using the NODE_SET_METHOD macro, we instead utilize the <code>Set</code> function within <code>NAN</code>. Notice there is a &quot;magic&quot; variable in the NAN version of <code>Init</code>, called <code>target</code>. This is supplied by the <code>NAN_MODULE_INIT</code> macro, and is indeed to <code>exports</code> object we are accustomed to working with. To set a value on any object using <code>NAN</code>, we must utilize actual JavaScript strings and functions - thus the extra code to convert &quot;pass_numbers&quot; into a V8 string and reference <code>PassNumber</code> as a JavaScript function. We&#39;ll cover the details of these conversions in a moment, as they use the standard <code>New</code> and <code>ToLocalChecked</code> methods that <code>NAN</code> relies quite heavily on.</p>
+<p>Moving up again, we look at the <code>PassNumber</code> function. In raw V8 code, we must have a specific call signature - where <code>void</code> is returned and we accept a <code>FunctionCallbackInfo</code> object containing calling information. This signature in particular has changed rather drastically over V8 versions, so it&#39;s no surprise NAN provides us with a macro to stamp this out. <code>NAN_METHOD</code> creates an appropriate function signature given the Node.js version installed. As we&#39;ll see in a moment, it also creates an <code>info</code> parameter which will allow us to get function arguments and the holder (this) in a V8 version agnostic way.</p>
+<p>All the way at the top of the two listings, you&#39;ll notice we are now using an additional namespace <code>Nan</code>. The <code>v8</code> namespace is still used, and <code>node.h</code> is already included through <code>nan.h</code>.</p>
+<h3 id="working-with-primitives">Working with Primitives</h3>
+<p>Let&#39;s remain on <code>PassNumber</code>. In it&#39;s simplest form, without error checking, the raw V8 implementation looked like this:</p>
+<pre><code class="lang-cpp">void PassNumber(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+
+    double value = args[0]-&gt;NumberValue();
+
+    Local&lt;Number&gt; retval = Number::New(isolate, value + 42);
+    args.GetReturnValue().Set(retval);
+}
+</code></pre>
+<p>The conversion to using NAN couldn&#39;t be easier. The main changes will:</p>
+<ol>
+<li>No need to obtain an <code>Isolate</code>.</li>
+<li>We will use the built-in <code>info</code> parameters, supplied by the <code>NAN_METHOD</code> macro instead of <code>FunctionCallbackInfo</code> directly.</li>
+<li>We&#39;ll use <code>Nan::New</code> to create a new number, rather than V8::Number (this is why we won&#39;t need <code>Isolate</code>.</li>
+</ol>
+<pre><code class="lang-cpp">NAN_METHOD(PassNumber) {
+    double value = info[0]-&gt;NumberValue();
+
+    Local&lt;Number&gt; retval = Nan::New(value + 42);
+    info.GetReturnValue().Set(retval); 
+}
+</code></pre>
+<p>Performing error checking is straightforward, since the <code>info</code> object has much the same functions available as <code>FunctionCallbackInfo&lt;Value&gt; args</code> has in the original V8 examples:</p>
+<pre><code class="lang-cpp">if ( info.Length() &lt; 1 ) {
+   info.GetReturnValue().Set(Nan::New(0));
+   return;
+}
+
+if ( !info[0]-&gt;IsNumber()) {
+  info.GetReturnValue().Set(Nan::New(-1));
+  return;
+}
+</code></pre>
+<p>The integer and boolean variations of these functions follow the same pattern - the <code>Nan::New</code> method is overloaded to create the appropriate values, and <code>info</code> has <code>IntegerValue</code> and <code>BooleanValue</code>.</p>
+<pre><code class="lang-cpp">NAN_METHOD(PassInteger) {
+    if ( info.Length() &lt; 1 ) {
+        return;
+    }
+    if ( !info[0]-&gt;IsInt32()) {
+        return;
+    }
+    int value = info[0]-&gt;IntegerValue();
+    Local&lt;Integer&gt; retval = Nan::New(value + 42);
+    info.GetReturnValue().Set(retval); 
+}
+
+NAN_METHOD(PassBoolean) {
+    if ( info.Length() &lt; 1 ) {
+        return;
+    }
+    if ( !info[0]-&gt;IsBoolean()) {
+        return;
+    }
+    bool value = info[0]-&gt;BooleanValue();
+    Local&lt;Boolean&gt; retval = Nan::New(!value);
+    info.GetReturnValue().Set(retval); 
+}
+</code></pre>
+<h3 id="maybe-types-and-tolocalchecked-">Maybe types and <code>ToLocalChecked</code></h3>
+<p>If you read the NAN documentation, you will quickly notice there is a large emphasis on the <code>Maybe</code> type concept, which is a relatively new feature of V8. Likewise, while our examples above work with arguments and new primitives in a concise format, much of the NAN examples instead use <code>ToLocalChecked</code> when creating JavaScript primitives and objects (including functions). In fact, we saw this style in the <code>Init</code> method itself. Let&#39;s look into what these concepts mean, and why you&#39;d want to use them.</p>
+<p>Let&#39;s imagine we have our <code>PassNumber</code> method exported and call it with JavaScript code like this:</p>
+<pre><code class="lang-javascript">console.log( addon.pass_number(&quot;xyz&quot;) );
+</code></pre>
+<p>In our original code, <code>info[0]</code> is a <code>Local&lt;Value&gt;</code> and it was trivial to get the &quot;correct&quot; number value given the argument passed to the add, <code>info[0]-&gt;NumberValue()</code> will return <code>NaN</code> if the argument is not a valid Number. There is an additional way to perform the conversion to a Number though, using <code>Nan::To</code> and <code>ToLocalChecked</code>.</p>
+<pre><code class="lang-cpp">NAN_METHOD(PassNumber) {
+
+    Nan::MaybeLocal&lt;Number&gt; value = Nan::To&lt;Number&gt;(info[0]); 
+
+    // will crash if value is empty
+    Local&lt;Number&gt; checked = value.ToLocalChecked();
+    Local&lt;Number&gt; retval = Nan::New(checked-&gt;Value() + 42);
+    info.GetReturnValue().Set(retval);    
+}
+</code></pre>
+<p>Here we see a (trivial) use of <code>Maybe</code> types, which may or may not hold values. <code>Nan::To</code> returns <code>Maybe</code> types - and converting into a true local is achieved by calling <code>ToLocalChecked</code>. Note that if <code>value</code> was actually empty, <code>ToLocalChecked</code> would crash the program. Interestingly though, <code>value</code> will always have an actual value because the conversion to <code>Number</code> is well defined in JavaScript - anything that isn&#39;t an number is <code>NaN</code>. In this case, no matter what we pass to <code>PassNumber</code>, <code>ToLocalChecked</code> will always succeed.</p>
+<p>We could also move directly to a <code>double</code>, instead of creating a <code>Local&lt;Number&gt;</code>.</p>
+<pre><code class="lang-cpp">NAN_METHOD(PassNumber) {
+    Nan::Maybe&lt;double&gt; value = Nan::To&lt;double&gt;(info[0]); 
+    Local&lt;Number&gt; retval = Nan::New(value.FromJust() + 42);
+    info.GetReturnValue().Set(retval);    
+}
+</code></pre>
+<p>We&#39;ll get the same results with this function as we&#39;ve gotten before - here we&#39;ve used the <code>Maybe</code> type&#39;s <code>FromJust</code> method to get the actual double value. Again, since numbers <em>always</em> have a defined value from any other JavaScript type - these <code>Maybe</code> examples are a bit superfluous - they never crash! Nevertheless, you&#39;ll see this style used in many places.</p>
+<h3 id="working-with-strings">Working with Strings</h3>
+<p>Extracting strings from arguments is similar to numbers and booleans, however converting them to actual C++ strings requires the extra step of using <code>Nan::Utf8String</code>, just like we needed to use <code>v8::String::Utf8Value</code> when dealing directly with V8.</p>
+<pre><code class="lang-cpp">NAN_METHOD(PassString) {
+    Nan::MaybeLocal&lt;String&gt; tmp = Nan::To&lt;String&gt;(info[0]);
+    Local&lt;String&gt; local_string = tmp.ToLocalChecked();
+
+    Nan::Utf8String val(local_string);
+
+    std::string str (*val);
+    std::reverse(str.begin(), str.end());
+
+    info.GetReturnValue().Set(
+         Nan::New&lt;String&gt;(str.c_str()).ToLocalChecked()); 
+}
+</code></pre>
+<p>When creating a new string object, we are now forced to deal directly with <code>Maybe</code> types again, unlike when creating new numbers. This is because while <code>Nan::New</code> returns <code>Local</code> for most JavaScript types, it returns <code>MaybeLocal</code> when creating strings, dates, regular expressions, and script objects. This inconsistency is driven by the underlying V8 API. As we saw above however, converting to a <code>Local</code> merely requires us to use <code>ToLocalChecked</code> on the return value of <code>Nan::New&lt;String&gt;</code>. Since we are specifically passing something known to be a string, we need not worry about <code>ToLocalChecked</code> actually failing.</p>
+<p>There is a slightly more convenient method of getting to a <code>Utf8String</code> from the <code>info</code> object as well, using the <code>ToString</code> method defined on <code>Local&lt;Value&gt;</code>.</p>
+<pre><code class="lang-cpp">NAN_METHOD(PassString) {
+    v8::String::Utf8Value val(info[0]-&gt;ToString());
+    std::string str (*val);
+    std::reverse(str.begin(), str.end());
+
+    info.GetReturnValue().Set(
+         Nan::New&lt;String&gt;(str.c_str()).ToLocalChecked()); 
+}
+</code></pre>
+<h3 id="working-with-objects">Working with Objects</h3>
+<p>So far you might have noticed that the real changes when moving to NAN are centered around the use (or lack) of <code>Isolate</code> and how new variables are allocated. NAN does not replace the direct usage of much of the V8 API - specifically <code>Local&lt;Value&gt;</code>. As we move to working with objects, this becomes even more apparent. Let&#39;s look at the first, pure V8 implementation of our <code>PassObject</code> addon function from Chapter 2.</p>
+<pre><code class="lang-cpp">Local&lt;Value&gt; make_return(
+    Isolate * isolate, const Local&lt;Object&gt; input ) {
+
+    Local&lt;String&gt; x_prop = String::NewFromUtf8(isolate, &quot;x&quot;);
+    Local&lt;String&gt; y_prop = String::NewFromUtf8(isolate, &quot;y&quot;);
+    Local&lt;String&gt; sum_prop = 
+        String::NewFromUtf8(isolate, &quot;sum&quot;);
+    Local&lt;String&gt; product_prop = 
+        String::NewFromUtf8(isolate, &quot;product&quot;);
+
+    double x = input-&gt;Get(x_prop)-&gt;NumberValue();
+    double y = input-&gt;Get(y_prop)-&gt;NumberValue();
+
+    HandleScope scope(isolate); // bad..
+    Local&lt;Object&gt; obj = Object::New(isolate);
+    obj-&gt;Set(sum_prop, Number::New(isolate, x + y));
+    obj-&gt;Set(product_prop, Number::New(isolate, x * y));
+
+    return obj;
+}
+
+void PassObject(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+    Local&lt;Object&gt; target = args[0]-&gt;ToObject();
+    Local&lt;Value&gt; obj = make_return(isolate, target);
+    args.GetReturnValue().Set(obj);
+}
+</code></pre>
+<p>The function expects an object to be passed in with numeric properties <code>x</code> and <code>y</code>. It builds a return object containing <code>sum</code> and <code>product</code> and returns it to JavaScript. The changes to utilize NAN are quite straightforward.</p>
+<pre><code class="lang-cpp">Local&lt;Value&gt; make_return(const Local&lt;Object&gt; input ) {
+    Local&lt;String&gt; x_prop = 
+        Nan::New&lt;String&gt;(&quot;x&quot;).ToLocalChecked();
+    Local&lt;String&gt; y_prop = 
+        Nan::New&lt;String&gt;(&quot;y&quot;).ToLocalChecked();
+    Local&lt;String&gt; sum_prop = 
+        Nan::New&lt;String&gt;(&quot;sum&quot;).ToLocalChecked();
+    Local&lt;String&gt; product_prop = 
+        Nan::New&lt;String&gt;(&quot;product&quot;).ToLocalChecked();
+
+    double x = input-&gt;Get(x_prop)-&gt;NumberValue();
+    double y = input-&gt;Get(y_prop)-&gt;NumberValue();
+
+    Local&lt;Object&gt; obj = Nan::New&lt;Object&gt;();
+    obj-&gt;Set(sum_prop, Nan::New&lt;Number&gt;(x + y));
+    obj-&gt;Set(product_prop, Nan::New&lt;Number&gt;(x * y));
+
+    return obj;
+}
+
+NAN_METHOD(PassObject) {
+    if ( info.Length() &gt; 0 ) {
+        Local&lt;Object&gt; target = info[0]-&gt;ToObject();
+        Local&lt;Value&gt; obj = make_return(target);
+        info.GetReturnValue().Set(obj);
+    }
+}
+</code></pre>
+<p>Note that the syntax to pull a property from the <code>input</code> object is changed, since we are using <code>Nan::New</code> to build the string property names. We are also utilizing <code>Nan::New&lt;Object&gt;</code> to create the new object to be returned. All references to <code>Isolate</code> have been removed, as this is being handled for us behind the scenes by NAN. In the example above, we are still using the native V8 <code>Set</code> method on <code>Local&lt;Object&gt;</code> to set the sum and product properties. NAN also has it&#39;s own property setting method as well, which when used would further shield you from V8 API version changes:</p>
+<pre><code class="lang-cpp">Nan::Set(obj, sum_prop, Nan::New&lt;Number&gt;(x+y));
+Nan::Set(obj, product_prop, Nan::New&lt;Number&gt;(x*y));
+</code></pre>
+<p>Likewise, we can use <code>Nan::Get</code> to retrieve <code>x</code> and <code>y</code> instead of using the raw V8 API. Here&#39;s the version of <code>make_return</code> in it&#39;s full NAN glory:</p>
+<pre><code class="lang-cpp">Local&lt;Value&gt; make_return(const Local&lt;Object&gt; input ) {
+    Local&lt;String&gt; x_prop = 
+        Nan::New&lt;String&gt;(&quot;x&quot;).ToLocalChecked();
+    Local&lt;String&gt; y_prop = 
+        Nan::New&lt;String&gt;(&quot;y&quot;).ToLocalChecked();
+    Local&lt;String&gt; sum_prop = 
+        Nan::New&lt;String&gt;(&quot;sum&quot;).ToLocalChecked();
+    Local&lt;String&gt; product_prop = 
+        Nan::New&lt;String&gt;(&quot;product&quot;).ToLocalChecked();
+
+    Local&lt;Object&gt; obj = Nan::New&lt;Object&gt;();
+    double x = Nan::Get(input, x_prop)
+        .ToLocalChecked()-&gt;NumberValue();
+    double y = Nan::Get(input, y_prop)
+        .ToLocalChecked()-&gt;NumberValue();
+
+    Nan::Set(obj, sum_prop, Nan::New&lt;Number&gt;(x+y));
+    Nan::Set(obj, product_prop, Nan::New&lt;Number&gt;(x*y));
+    return obj;
+}
+</code></pre>
+<p>Now seems like a good time to point out what may already be obvious... using NAN and V8 API&#39;s is not an &quot;either or&quot; proposition, there is no problem with mixing. That said, if you are using NAN at all, it likely makes sense to write everything you can using the &quot;NAN way&quot; - this way you&#39;ll get the full advantage of version compatibility.</p>
+<h3 id="working-with-arrays">Working with Arrays</h3>
+<p>Rounding out our conversion of the basic Chapter 2 examples, let&#39;s take a look at changes when dealing with arrays. Recall, we build a sort of silly array addon function which accepted an array of numerics, but also had a property called &quot;not_index&quot; to demonstrate how we could still access named properties on an array. The addon returned an array containing 3 elements - the first and last were simply the first and last elements from the input array, incremented by one. The second index in the returned array was set to the value found in &quot;not_index&quot;. Here&#39;s what we had using V8:</p>
+<pre><code class="lang-cpp">void IncrementArray(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+    Local&lt;Array&gt; array = Local&lt;Array&gt;::Cast(args[0]);
+
+    for (unsigned int i = 0; i &lt; array-&gt;Length(); i++ ) {
+      if (array-&gt;Has(i)) {
+        double value = array-&gt;Get(i)-&gt;NumberValue();
+        array-&gt;Set(i, Number::New(isolate, value + 1));
+      }
+    }
+
+
+    Local&lt;String&gt; prop = 
+        String::NewFromUtf8(isolate, &quot;not_index&quot;);
+    Local&lt;Array&gt; a = Array::New(isolate);
+    a-&gt;Set(0, array-&gt;Get(0));
+    a-&gt;Set(1, array-&gt;Get(prop));
+    a-&gt;Set(2, array-&gt;Get(2));
+
+    args.GetReturnValue().Set(a);
+}
+</code></pre>
+<p>Let&#39;s jump right to the full NAN implementation. The key changes will of course be creating the new array, the new values, and using NAN getters and setters to access the array indexes and properties. Note the use of an integer with <code>Nan::Set</code> and <code>Nan::Get</code>, which allows you to index the array.</p>
+<pre><code class="lang-cpp">NAN_METHOD(IncrementArray) {
+    Local&lt;Array&gt; array = Local&lt;Array&gt;::Cast(info[0]);
+
+    for (unsigned int i = 0; i &lt; array-&gt;Length(); i++ ) {
+      if (Nan::Has(array, i).FromJust()) {
+        double value = Nan::Get(array, i)
+            .ToLocalChecked()-&gt;NumberValue();
+        Nan::Set(array, i, Nan::New&lt;Number&gt;(value + 1));
+      }
+    }
+
+    Local&lt;String&gt; prop = 
+        Nan::New&lt;String&gt;(&quot;not_index&quot;).ToLocalChecked();
+    Local&lt;Array&gt; a = New&lt;v8::Array&gt;(3);
+    Nan::Set(a, 0, Nan::Get(array, 0).ToLocalChecked());
+    Nan::Set(a, 1, Nan::Get(array, prop).ToLocalChecked());
+    Nan::Set(a, 2, Nan::Get(array, 2).ToLocalChecked());
+
+    info.GetReturnValue().Set(a);
+}
+</code></pre>
+<p>In the above example, you may notice one glaring inconsistency - we are using the basic V8 <code>Local&lt;Array&gt;::Cast</code> function to convert our single function parameter into an array. Curiously, unlike primitives and objects, NAN does not currently provide a &quot;NAN way&quot; of doing the casting to arrays. Thankfully, the code above will work in all versions of Node.js - which is likely why a &quot;NAN way&quot; has never made it into the development pipeline.</p>
+<h2 id="callbacks-and-asynchronous-patterns">Callbacks and Asynchronous Patterns</h2>
+<p>We&#39;ve seen several examples throughout this book that involve JavaScript functions being sent to C++ addons, and then invoked from the C++. In particular, we saw both synchronous and asynchronous callbacks in Chapter 4, where we calculated rainfall statistics in C++. One area where NAN goes a bit beyond simple macros and API redefinition is when dealing with callbacks and asynchronous workers. For these subjects, NAN actually provides some extra utility classes that make accomplishing things <em>significantly</em> easier (and different) than raw V8.</p>
+<p>Instead of resurrecting the rainfall example from Chapter 4, which is fairly large, let&#39;s focus on a more succinct addon function, which computes prime numbers. We&#39;ll start out with a synchronous version, and then reconfigure it to create an asynchronous version. In both cases, we&#39;ll export a single function called <code>prime</code> that accepts two parameters. The first will be an integer, <code>N</code>, for which we will generate all prime numbers <code>&lt; N</code>. The second parameter will be a <em>callback</em> function that will be called once the prime numbers are calculated. The callback should accept a <code>primes</code> array, which contains the results. We&#39;ll use it like this:</p>
+<pre><code class="lang-javascript">addon.primes(20, function (primes) {
+    // prints 2, 3, 5, 7, 11, 13, 17, 19
+    console.log(&quot;Primes less than 20 = &quot; + primes);
+});
+</code></pre>
+<p>Let&#39;s first start out creating a standard C++ function that accepts <code>N</code> and a <code>vector</code> to fill with prime numbers - we&#39;ll use this in both the synchronous and asynchronous version of our addon. <code>find_primes</code> implements a simplified prime sieve algorithm.</p>
+<pre><code class="lang-cpp">
+void find_primes(int limit, vector&lt;int&gt; &amp; primes) {
+    std::vector&lt;int&gt; is_prime(limit, true);
+    for (int n = 2; n &lt; limit; n++ ) {
+        if (is_prime[n] ) primes.push_back(n);
+        for (int i = n * n; i &lt; limit; i+= n) {
+            is_prime[i] = false;
+        }
+    }
+}
+</code></pre>
+<p>Let&#39;s now take a look at what the addon code would look like in a synchronous version:</p>
+<pre><code class="lang-cpp">NAN_METHOD(Primes) {
+    int limit = info[0]-&gt;IntegerValue();
+    Callback *callback = new Callback(info[1].As&lt;Function&gt;());
+
+    vector&lt;int&gt; primes;
+    find_primes(limit, primes);
+
+    Local&lt;Array&gt; results = New&lt;Array&gt;(primes.size());
+    for ( unsigned int i = 0; i &lt; primes.size(); i++ ) {
+        Nan::Set(results, i, New&lt;v8::Number&gt;(primes[i]));
+    }
+
+    Local&lt;Value&gt; argv[] = { results };
+    callback-&gt;Call(1, argv);
+}
+
+NAN_MODULE_INIT(Init) {
+   Nan::Set(target, New&lt;String&gt;(&quot;primes&quot;).ToLocalChecked(),
+        GetFunction(New&lt;FunctionTemplate&gt;(Primes))
+        .ToLocalChecked());
+}
+
+NODE_MODULE(primes, Init)
+</code></pre>
+<p>The most interesting aspect of the addin is how we are using NAN to help us deal with the callback, which must be invoked once we have our results. Note the use of the <code>Callback</code> object, it is a NAN class that wraps a standard <code>v8::Function</code>. In the synchronous code above, it provides limited added value over using <code>v8::Function</code> directly - however <code>Callback</code> protects functions it wraps from garbage collection (utilizing <code>Persistent</code> handles). This functionality greatly simplifies callback usage when working with asynchronous addons, so they are good to get in the habit of using.</p>
+<p>Most addons that accept callbacks are asynchronous (otherwise, why not just return the results directly!). In Chapter 4 we dove right into working with <code>libuv</code>, creating a multi-threaded addon where we managed the movement of data between the worker thread and Node event loop thread ourselves. It was a lot of work, and it&#39;s easy to make mistakes. NAN offers several utility classes that abstract the concept of moving data between the event loop and worker threads, which lets us focus on actual code a bit more quickly.</p>
+<p>The key class NAN provides is <a href="https://github.com/nodejs/nan/blob/master/doc/asyncworker.md#api_nan_async_worker"><code>Nan::AsyncWorker</code></a>. This class allows you to create a new worker thread and facilitates storing data persistently, invoking the worker thread code, and invoking the persistent callback when you are done. Your first step is to setup a class that inherits from <code>AsyncWorker</code> and implement the abstract <code>Execute</code> method. Typically input to your worker thread will be saved within your class, generally passed in through it&#39;s constructor. When your <code>Execute</code> function completes (we&#39;ll see how to get it to run in a moment), <code>AsyncWorker</code> will call it&#39;s <code>HandleOKCallback</code> - which typically you&#39;ll override to invoke a callback to send the results back to JavaScript. <code>AsyncWorker</code> ensures <code>Execute</code> runs in a background thread and <code>HandleOKCallback</code> (and <code>HandleErrorCallback</code>, if necessary) are executed as part of the event loop.</p>
+<p>The code below sets up a basic <code>AsyncWorker</code> implementation that works with our prime number code:</p>
+<pre><code class="lang-cpp">class PrimeWorker : public AsyncWorker {
+    public:
+    PrimeWorker(Callback * callback, int limit) 
+        : AsyncWorker(callback), limit(limit) {
+
+    }
+    // Executes in worker thread
+    void Execute() {
+        find_primes(limit, primes);
+    }
+    // Executes in event loop
+    void HandleOKCallback () {
+        Local&lt;Array&gt; results = New&lt;Array&gt;(primes.size());
+        for ( unsigned int i = 0; i &lt; primes.size(); i++ ) {
+            Nan::Set(results, i, New&lt;v8::Number&gt;(primes[i]));
+        }  
+        Local&lt;Value&gt; argv[] = { results };
+        callback-&gt;Call(1, argv);
+    }
+    private:
+    int limit;
+    vector&lt;int&gt; primes;
+};
+</code></pre>
+<p>Note that in <code>PrimeWorker</code>&#39;s constructor, we call the base class&#39;s constructor to pass in the callback - which <code>AsyncWorker</code> will store persistently. The actual work is being done in <code>Execute</code>, which uses member variables <code>limit</code> and <code>primes</code> to compute the results. Once <code>Execute</code> completes, <code>HandleOKCallback</code> is called (on the event loop thread) and we invoke the callback. The code is virtually identical to the synchronous version, just spread out over two member functions.</p>
+<p>Of course, this class must be instantiated. We&#39;ll do so in our addon function, but we won&#39;t directly invoke <code>Execute</code>. Instead, NAN provides a utility method called <code>AsyncQueueWorker</code> which accepts a <code>AsyncWorker</code> and queue&#39;s it&#39;s execution up such that <code>Execute</code> is run in a worker thread. This frees us from dealing directly with <code>libuv</code> entirely.</p>
+<pre><code class="lang-cpp">NAN_METHOD(Primes) {
+    int limit = To&lt;int&gt;(info[0]).FromJust();
+    Callback *callback = new Callback(info[1].As&lt;Function&gt;());
+
+    AsyncQueueWorker(new PrimeWorker(callback, limit));
+}
+</code></pre>
+<p>Invoking the synchronous and asynchronous versions of the prime addon from JavaScript works the same way, and we&#39;ll get identical results - however the asynchronous is far superior in that the heavy CPU computation being done for large <code>N</code> values won&#39;t tie up the event loop from working on other things!</p>
+<h3 id="sending-progress-updates-from-async-addons">Sending Progress Updates from async addons</h3>
+<p>In the prime addon above, we generate prime numbers within a core <code>for</code> loop, which could take a while to complete. We collect all the prime numbers in a <code>vector</code> and then dump it all back at once at the end. It would be nice if we could display the current progress we&#39;ve made, so a user isn&#39;t left in the dark about how long the process might take. While we could do this with <code>libuv</code> directly, NAN really helps us out in this case - by providing a subclass of <code>AsyncWorker</code> called <code>AsyncProgressWorker</code>. <code>AsyncProgressWorker</code> builds out a convenient pattern for sending progress updates back to JavaScript during asynchronous execution.</p>
+<p>The core principle behind <code>AsyncProgressWorker</code> is an additional parameter passed into our <code>Execute</code> function. The parameter, of type <code>ExecutionProgress</code> is our window into queuing up calls to a second callback we must now implement - <code>HandleProgressCallback</code>. <code>HandleProgressCallback</code> will be executed in the event loop, and <code>ExecutionProgresss</code> provides a method that allows us to store data (persistently), and add a call to <code>HandleProgressCallback</code> to the queue. This method, <code>progress.Send</code> is simple - it accepts a pointer to data, and it&#39;s size. The data is stored in a <code>Persistent</code> handle within <code>ExecutionProgress</code> until the callback is invoked in the event loop.</p>
+<p>Below is an adaptation of the <code>PrimeWorker</code> code from above that now sends progress updates indicating how close it is to completing. In the <code>Execute</code> function we are actually computing prime numbers, instead of delegating to the original <code>find_primes</code>, since we need to send progress updates (you could, of course, modify <code>find_primes</code> to accept a <code>progress</code> object as well). Note that we are also sleeping after each turn around the loop, just for effect (otherwise we&#39;d be done quite quickly!). The sleep code requires C++11, and inclusion of <code>&lt;thread&gt;</code> and &lt;<code>chrono</code>&gt; libraries.</p>
+<pre><code class="lang-cpp">class PrimeProgressWorker : public AsyncProgressWorker {
+    public:
+    PrimeProgressWorker(Callback * callback, 
+        Callback * progress, int limit) 
+        : AsyncProgressWorker(callback), 
+            progress(progress), limit(limit) {
+
+    }
+    // Executes in worker thread
+    void Execute(
+        const AsyncProgressWorker::ExecutionProgress &amp; progress) {
+
+        std::vector&lt;int&gt; is_prime(limit, true);
+        for (int n = 2; n &lt; limit; n++ ) {
+            double p = (100.0 * n) / limit;
+            progress.Send(reinterpret_cast&lt;const char*&gt;(&amp;p), 
+                sizeof(double));
+            if (is_prime[n] ) primes.push_back(n);
+            for (int i = n * n; i &lt; limit; i+= n) {
+                is_prime[i] = false;
+            }
+            std::this_thread::sleep_for(
+                    chrono::milliseconds(100));
+        }
+    }
+    // Executes in event loop
+    void HandleOKCallback () {
+        Local&lt;Array&gt; results = New&lt;Array&gt;(primes.size());
+        for ( unsigned int i = 0; i &lt; primes.size(); i++ ) {
+            Nan::Set(results, i, New&lt;v8::Number&gt;(primes[i]));
+        }  
+        Local&lt;Value&gt; argv[] = { results };
+        callback-&gt;Call(1, argv);
+    }
+
+    void HandleProgressCallback(const char *data, size_t size) {
+        // Required, this is not created automatically 
+        Nan::HandleScope scope; 
+
+        Local&lt;Value&gt; argv[] = {
+            New&lt;v8::Number&gt;(*reinterpret_cast&lt;double*&gt;(
+                const_cast&lt;char*&gt;(data)))
+        };
+        progress-&gt;Call(1, argv);
+    }
+    private:
+    Callback *progress;
+    int limit;
+    vector&lt;int&gt; primes;
+};
+</code></pre>
+<p>In an odd quirk, unlike <code>HandleOKCallback</code>, a <code>HandleScope</code> is <em>not</em> created automatically for us before <code>HandleProgressCallback</code> is invoked - so it&#39;s our responsibility to create one before allocating new V8 memory. Note that <code>AsyncProgressWorker</code> handles &quot;progress updates&quot; as overwrite-able - meaning each time a progress message is logged it overwrites the one previously logged. In our example above, since we are waiting 100 milliseconds on each turn around the for loop, it&#39;s likely that you&#39;ll see 0%, 1%, 2%... 100% appear on the screen. If we were to remove the 100 millisecond wait however, you might be surprised to simply see the 100% complete message - and likely none of the other progress updates. This is because each time you invoke <code>SendProgress</code> a job is queued to the event loop (the job of calling <code>HandleProgressCallback</code>). There is no guarantee that that job will execute before your worker thread sends another progress message - and in our case, for relatively small <code>N</code> values, it&#39;s likely ALL the progress updates will be logged before <code>libuv</code> ever actually gets around to calling <code>HandleProgressCallback</code>.</p>
+<p>For progress updates, the behavior described make sense, since there shouldn&#39;t be an harm in dropping obsolete progress updates. For sending actual data to JavaScript (like partial results) however, this functionality is disastrous! Ultimately, <code>AsyncWorker</code> and <code>AsyncProgressWorker</code> are really meant as examples, they shouldn&#39;t be looked at as representative of the scope of what we can do. In Chapter 7, we&#39;ll see the idea of progress updates extended to provide streaming interfaces to and from addons. We&#39;ll utilize additional queues to ensure that no &quot;progress&quot; messages are ever overwritten, making our implementations suitable for sending real data.</p>
+<p>As an aside, the prime number example we&#39;ve just seen is also the subject of Appendix A, where alternative methods of integrating existing C++ code are discussed.</p>
+<h2 id="objectwrap">ObjectWrap</h2>
+<p>The last piece of the C++ addon puzzle we talked about before hitting NAN was <code>ObjectWrap</code>, which allowed us to pass complete C++ classes to JavaScript, provided we decorated them with a lot of Node/V8 boilerplate. That Node/V8 boilerplate code leaves us susceptible to version issues - <code>ObjectWrap</code> API in fact has changed through several versions of Node.js.</p>
+<p>Thankfully, learning the &quot;NAN&quot; way to do object wrapping is pretty trivial, since Chapter 5&#39;s discussion was based on recent versions (v4+) of Node.js, you&#39;ll notice that the NAN <code>ObjectWrap</code> implementation is nearly identical to what we&#39;ve already learned. The benefit of using it, rather than the API in Chapter 5, is derived from the ability to target earlier versions of Node.js.</p>
+<p>Rather than repeating lots of code, the reader should refer back to the final implementation of <code>WrappedPoly</code> in Chapter 5. You&#39;ll notice that the class definition extended <code>node::ObjectWrap</code>. To use the NAN implementation, simply extend <code>Nan::ObjectWrap</code> instead (of course, you must include <code>nan.h</code> too). Most changes that you&#39;ll end up making while moving to NAN for an ObjectWrap stem from the typical NAN changes (<code>New</code>, no <code>Isolate</code>, etc.), however there are some changes specific to <code>Nan::ObjectWrap</code>.</p>
+<p>First let&#39;s look at the <code>WrappedPoly</code> class declaration from Chapter 5 and highlight the changes we&#39;ll want to make:</p>
+<pre><code class="lang-cpp">class WrappedPoly : public node::ObjectWrap {
+ public:
+  static void Init(v8::Local&lt;v8::Object&gt; exports);
+
+ private:
+  explicit WrappedPoly(double a = 0, double b = 0, double c = 0)
+    : a_(a), b_(b), c_(c) {}
+  ~WrappedPoly() {}
+
+  static void New(
+        const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args) ;
+  static void At(
+        const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args);
+  static void Roots(
+        const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args);
+
+  static void GetCoeff(Local&lt;String&gt; property, 
+    const PropertyCallbackInfo&lt;Value&gt;&amp; info);
+  static void SetCoeff(Local&lt;String&gt; property, 
+    Local&lt;Value&gt; value, const PropertyCallbackInfo&lt;void&gt;&amp; info);
+
+  static v8::Persistent&lt;v8::Function&gt; constructor;
+  double a_;
+  double b_;
+  double c_;
+};
+</code></pre>
+<p>When moving to <code>Nan::ObjectWrap</code> the major changes that take place center on method declarations. It is wise in this case to use NAN macros for the <code>Init</code>, accessors, and member methods. In addition, due to namespacing issues, the <code>constructor</code> object must be moved outside of the <code>WrappedPoly</code>, and modified from <code>v8::Persistent&lt;v8::Function&gt;</code> to <code>Nan::Persistent&lt;v8::FunctionTemplate&gt;</code>. Here&#39;s the full declaration:</p>
+<pre><code class="lang-cpp">static Persistent&lt;v8::FunctionTemplate&gt; constructor;
+
+class WrappedPoly : public Nan::ObjectWrap {
+ public:
+  static NAN_MODULE_INIT(Init) ;
+
+ private:
+  explicit WrappedPoly(double a = 0, double b = 0, double c = 0)
+    : a_(a), b_(b), c_(c) {}
+  ~WrappedPoly() {}
+
+  static NAN_METHOD(New) ;
+  static NAN_METHOD(At) ;
+  static NAN_METHOD(Roots) ;
+
+  static NAN_GETTER(GetCoeff);
+  static NAN_SETTER(SetCoeff);
+
+  double a_;
+  double b_;
+  double c_;
+};
+</code></pre>
+<p>Within the methods, changes mostly involve <code>Nan::New</code> and the like, however there are some interesting changes in <code>Init</code>. Here is the original implementation from Chapter 5:</p>
+<pre><code class="lang-cpp">static void Init(v8::Local&lt;v8::Object&gt; exports) {
+    Isolate* isolate = exports-&gt;GetIsolate();
+
+    Local&lt;FunctionTemplate&gt; tpl = 
+        FunctionTemplate::New(isolate, New);
+    tpl-&gt;SetClassName(String::NewFromUtf8(isolate, &quot;Polynomial&quot;));
+    tpl-&gt;InstanceTemplate()-&gt;SetInternalFieldCount(1);
+
+    NODE_SET_PROTOTYPE_METHOD(tpl, &quot;at&quot;, At);
+    NODE_SET_PROTOTYPE_METHOD(tpl, &quot;roots&quot;, Roots);
+
+    tpl-&gt;InstanceTemplate()-&gt;SetAccessor(
+            String::NewFromUtf8(isolate, &quot;a&quot;), 
+            GetCoeff, SetCoeff);
+    tpl-&gt;InstanceTemplate()-&gt;SetAccessor(
+            String::NewFromUtf8(isolate, &quot;b&quot;), 
+            GetCoeff, SetCoeff);
+    tpl-&gt;InstanceTemplate()-&gt;SetAccessor(
+            String::NewFromUtf8(isolate, &quot;c&quot;), 
+            GetCoeff, SetCoeff);
+
+    constructor.Reset(isolate, tpl-&gt;GetFunction());
+    exports-&gt;Set(String::NewFromUtf8(isolate, &quot;Polynomial&quot;),
+               tpl-&gt;GetFunction());
+}
+</code></pre>
+<p>Moved to NAN, we need to use different methods to set prototype methods and accessors:</p>
+<pre><code class="lang-cpp">static NAN_MODULE_INIT(Init) {
+    // Prepare constructor template
+    v8::Local&lt;v8::FunctionTemplate&gt; tpl = 
+        Nan::New&lt;v8::FunctionTemplate&gt;(WrappedPoly::New);
+
+    tpl-&gt;SetClassName(
+            Nan::New&lt;v8::String&gt;(&quot;Polynomial&quot;).ToLocalChecked());
+    tpl-&gt;InstanceTemplate()-&gt;SetInternalFieldCount(1);
+
+    // Prototype
+    SetPrototypeMethod(tpl, &quot;at&quot;, WrappedPoly::At);
+    SetPrototypeMethod(tpl, &quot;roots&quot;, WrappedPoly::Roots);
+
+    v8::Local&lt;v8::ObjectTemplate&gt; itpl = tpl-&gt;InstanceTemplate();
+    SetAccessor(itpl, Nan::New&lt;v8::String&gt;(&quot;a&quot;).ToLocalChecked(), 
+        WrappedPoly::GetCoeff, WrappedPoly::SetCoeff);
+    SetAccessor(itpl, Nan::New&lt;v8::String&gt;(&quot;b&quot;).ToLocalChecked(), 
+        WrappedPoly::GetCoeff, WrappedPoly::SetCoeff);
+    SetAccessor(itpl, Nan::New&lt;v8::String&gt;(&quot;c&quot;).ToLocalChecked(), 
+        WrappedPoly::GetCoeff, WrappedPoly::SetCoeff);
+
+    constructor.Reset(tpl);
+    Set(target, 
+        Nan::New&lt;v8::String&gt;(&quot;Polynomial&quot;).ToLocalChecked(), 
+        tpl-&gt;GetFunction());
+}
+</code></pre>
+<p>Viewed side by side, you can see the changes are mainly &quot;cosmetic&quot;, involving new NAN methods <code>SetAccessor</code> and <code>SetPrototypeMethod</code>. The rest of the changes to the <code>WrappedPoly</code> class are self-explanatory, they are just converting variable allocations/conversions to NAN syntax. Below is the full code listing of a completed example using <code>Nan</code>.</p>
+<pre><code class="lang-cpp">#include &lt;cmath&gt;
+#include &lt;nan.h&gt;
+#include &lt;string&gt;
+using namespace Nan;
+
+static Persistent&lt;v8::FunctionTemplate&gt; constructor;
+
+class WrappedPoly : public Nan::ObjectWrap {
+ public:
+  static NAN_MODULE_INIT(Init) {
+      v8::Local&lt;v8::FunctionTemplate&gt; tpl = 
+        Nan::New&lt;v8::FunctionTemplate&gt;(WrappedPoly::New);
+      constructor.Reset(tpl);
+      tpl-&gt;SetClassName(
+            Nan::New&lt;v8::String&gt;(&quot;Polynomial&quot;).ToLocalChecked());
+      tpl-&gt;InstanceTemplate()-&gt;SetInternalFieldCount(1);
+      SetPrototypeMethod(tpl, &quot;at&quot;, WrappedPoly::At);
+      SetPrototypeMethod(tpl, &quot;roots&quot;, WrappedPoly::Roots);
+      v8::Local&lt;v8::ObjectTemplate&gt; itpl = tpl-&gt;InstanceTemplate();
+      SetAccessor(itpl, Nan::New&lt;v8::String&gt;(&quot;a&quot;).ToLocalChecked(), 
+        WrappedPoly::GetCoeff, WrappedPoly::SetCoeff);
+      SetAccessor(itpl, Nan::New&lt;v8::String&gt;(&quot;b&quot;).ToLocalChecked(), 
+        WrappedPoly::GetCoeff, WrappedPoly::SetCoeff);
+      SetAccessor(itpl, Nan::New&lt;v8::String&gt;(&quot;c&quot;).ToLocalChecked(), 
+        WrappedPoly::GetCoeff, WrappedPoly::SetCoeff);
+      Set(target, 
+        Nan::New&lt;v8::String&gt;(&quot;Polynomial&quot;).ToLocalChecked(), 
+        tpl-&gt;GetFunction());
+  }
+
+ private:
+  explicit WrappedPoly(double a = 0, double b = 0, double c = 0)
+    : a_(a), b_(b), c_(c) {}
+  ~WrappedPoly() {}
+
+  static NAN_METHOD(New) {
+      double a = info[0]-&gt;IsUndefined() ? 0 : 
+        info[0]-&gt;NumberValue();
+      double b = info[1]-&gt;IsUndefined() ? 0 : 
+        info[1]-&gt;NumberValue();
+      double c = info[2]-&gt;IsUndefined() ? 0 : 
+        info[2]-&gt;NumberValue();
+      WrappedPoly* obj = new WrappedPoly(a, b, c);
+      obj-&gt;Wrap(info.This());
+      info.GetReturnValue().Set(info.This());
+  }
+  static NAN_METHOD(At) ;
+  static NAN_METHOD(Roots) ;
+
+  static NAN_GETTER(GetCoeff);
+  static NAN_SETTER(SetCoeff);
+
+  double a_, b_, c_;
+};
+
+NAN_METHOD(WrappedPoly::At){
+    double x = info[0]-&gt;IsUndefined() ? 0 : 
+        info[0]-&gt;NumberValue();
+    WrappedPoly* poly = 
+        ObjectWrap::Unwrap&lt;WrappedPoly&gt;(info.Holder());
+    double results = x * x * poly-&gt;a_ + 
+        x * poly-&gt;b_ + 
+        poly-&gt;c_;
+
+    info.GetReturnValue().Set(
+            Nan::New&lt;v8::Number&gt;(results));
+}
+
+NAN_METHOD(WrappedPoly::Roots){
+    WrappedPoly* poly = 
+        ObjectWrap::Unwrap&lt;WrappedPoly&gt;(info.Holder());
+    v8::Local&lt;v8::Array&gt; roots = Nan::New&lt;v8::Array&gt;();
+    double desc = poly-&gt;b_ * poly-&gt;b_ - (4 * poly-&gt;a_ * poly-&gt;c_);
+    if (desc &gt;= 0 ) {
+        double r = (-poly-&gt;b_ + sqrt(desc))/(2 * poly-&gt;a_);
+        roots-&gt;Set(0,Nan::New&lt;v8::Number&gt;(r));
+        if ( desc &gt; 0) {
+            r = (-poly-&gt;b_ - sqrt(desc))/(2 * poly-&gt;a_);
+            roots-&gt;Set(1,Nan::New&lt;v8::Number&gt;(r));
+        }
+    }
+    info.GetReturnValue().Set(roots);
+}
+
+NAN_GETTER(WrappedPoly::GetCoeff) {
+    v8::Isolate* isolate = info.GetIsolate();
+    WrappedPoly* obj = ObjectWrap::Unwrap&lt;WrappedPoly&gt;(info.This());
+    v8::String::Utf8Value s(property);
+    std::string str(*s);
+    if ( str == &quot;a&quot;)     
+        info.GetReturnValue().Set(
+            v8::Number::New(isolate, obj-&gt;a_));
+    else if (str == &quot;b&quot;) 
+        info.GetReturnValue().Set(
+            v8::Number::New(isolate, obj-&gt;b_));
+    else if (str == &quot;c&quot;) 
+        info.GetReturnValue().Set(
+            v8::Number::New(isolate, obj-&gt;c_));
+}
+
+NAN_SETTER(WrappedPoly::SetCoeff) {
+    WrappedPoly* obj = ObjectWrap::Unwrap&lt;WrappedPoly&gt;(info.This());
+
+    v8::String::Utf8Value s(property);
+    std::string str(*s);
+
+    if ( str == &quot;a&quot;) obj-&gt;a_ = value-&gt;NumberValue();
+    else if (str == &quot;b&quot;) obj-&gt;b_ = value-&gt;NumberValue();
+    else if (str == &quot;c&quot;) obj-&gt;c_ = value-&gt;NumberValue();
+}
+
+void InitPoly(v8::Local&lt;v8::Object&gt; exports) {
+  WrappedPoly::Init(exports);
+}
+
+NODE_MODULE(polynomial, InitPoly)
+</code></pre>
+<h2 id="nan-conclusions">Nan - conclusions</h2>
+<p>NAN aims to never fundamentally alter the programming model around C++ addon, only to provide a thin API layer around V8 to ensure backwards and forwards compatibility. Moving forward, the general consensus is to use NAN wherever possible - it&#39;s simply a safer bet than trying to keep up with versions of V8 yourself. Moving forward with the remainder of this book, including appendices, we&#39;ll stick largely with NAN - although sometimes my old V8 habits do find their way into the code listings!</p>
+<p><a href="ch07.html">Next Chapter</a><br><a href="index.html">Table of Contents</a></p>
+</body></html>

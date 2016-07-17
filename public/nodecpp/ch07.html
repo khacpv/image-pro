@@ -1,0 +1,1129 @@
+<!doctype html><html><head>
+
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/styles/default.min.css">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/highlight.min.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+  <style>
+      .markdown-body {
+          box-sizing: border-box;
+          min-width: 200px;
+          max-width: 980px;
+          margin: 0 auto;
+          padding: 45px;
+      }
+      .highlight {
+        background-color:red;
+        background-color:#f1c40f;
+        padding:1em;
+      }
+  </style>
+<title>C++ and Node.js Integration</title>
+</head><body class='markdown-body'>
+<p><a href="index.html">Table of Contents</a></p>
+<h1 id="chapter-7-streaming-between-node-and-c-">Chapter 7 - Streaming between Node and C++</h1>
+<p>We&#39;ve come a long way now! Not only have we learned how to deal with basic Node.js C++ integrations using V8, but we&#39;re now armed with the tools to wrap objects that can maintain state. We know how to abstract away much of the nastiness of asynchronous execution and V8 versions using <code>nan</code>. Now it&#39;s time to put it all together and develop addons that offer more sophisticated ways of interacting with C++ from JavaScript. In this chapter we&#39;ll build addons that expose interfaces that mimic <code>EventEmitter</code>s and streams. These interfaces are particularly well suited for long running C++ worker tasks that continuously either send input back to JavaScript or receive a series of inputs from it.</p>
+<p>The concepts discussed in this chapter are advanced, if you merely skimmed the last few chapters you might want to go back and read them more carefully. To get our streaming interface, we&#39;ll make heavy use of <code>nan</code>, asynchronous execution, and even <code>ObjectWrap</code>. I&#39;ll cover the concepts through a series of distinct examples, and then meld the code together a bit to end up with a reusable SDK for developing streaming C+++ addons.</p>
+<p>As a first step, we&#39;ll focus on exposing our C++ addons via an <code>EventEmitter</code>-like interface rather than function calling. We&#39;ll build from there, wrapping those event emitters in an JS adapter module to expose streaming interfaces.</p>
+<p>If you are following along with the <code>nodecpp-demo</code> code, head over to the <code>streaming</code> directory in that repository to look at the full, completed code for this chapter.</p>
+<h2 id="emitting-events-from-c-">Emitting events from C++</h2>
+<p>Sometimes we use C++ to do some heavy compute task that actually generates partial results over time. One way to work with addons like this would be to make it asynchronous, and when the results are completed, we could make the addon return the entire result (with partial results included, perhaps). Alternatively, we could implement the asynchronous addon such that all partial results were returned immediately, through invoking a JS callback. Moving further, the &quot;Node way&quot; of capturing a sequence of data is typically through the <code>EventEmitter</code> interface.</p>
+<p>One problem that fits (sort of) this model is prime factorization. Factoring a number N, especially when it is large, is a bit time consuming[1] - however we compute factors in series, not all at once. Let&#39;s try to develop a C++ addon <em>emits</em> factors as they are computed - yielding us a Node.js program that looks something like this:</p>
+<pre><code class="lang-javascript">// factorization.js
+var factor = require(&lt;path to addon&gt;);
+
+const factorization = factor({n:9007199254740991});
+
+factorizer.on(&#39;factor&#39;, function(factor){
+    console.log(&quot;Factor:  &quot; + factor);
+});
+
+factorizer.on(&#39;close&#39;, function() {
+    console.log(&quot;Factorization complete&quot;);
+});
+</code></pre>
+<p>We&#39;d end up with the following output:</p>
+<pre><code class="lang-bash">Factor:  6361
+Factor:  69431
+Factor:  20394401
+Factorization complete
+</code></pre>
+<p>As you can see, this hypothetical addon emits events of type <code>factor</code>, along with the standard <code>close</code> event (and probably <code>error</code> too!).</p>
+<p>Let&#39;s build it.</p>
+<h3 id="building-the-c-addon">Building the C++ addon</h3>
+<p>The core of the C++ addon code is the factorization process. Before we get into all the addon boilerplate and thread safety, we can model what the C++ code should really look like:</p>
+<pre><code class="lang-cpp">void factorize(uint32_t n) {
+    while (n%2 == 0) {
+        writeToNode(2);
+        n = n/2;
+    }
+    for (uint32_t i = 3; i &lt;= n; i = i+2) {
+        while (n%i == 0) {
+            writeToNode(i);
+            n = n/i;
+        }
+    }
+</code></pre>
+<p>The key thing here is that the <code>send_to_node</code> method has to (1) get the integer factor across the thread boundary, from the worker to the event loop thread, and (2) end up getting mapped to a proper event emitter. Notice that <code>send_to_node</code> is essentially the &quot;send progress&quot; problem though - we have an addon that is long running, and sends frequent updates. As we saw in Chapter 6, <code>nan</code> provides an excellent starting point for such and addon, <code>AsyncProgressWorker</code>. We are going to largely hijack this class, with some important changes to ensure our addon receives <em>every</em> message we send it [2].</p>
+<p>Let&#39;s first create a standard implementation of AsyncProgressWorker that computes factorizations. Since we&#39;ve already covered this topic in Chapter 6, it should be pretty straightforward at this point:</p>
+<pre><code class="lang-cpp">class Factorizer : public AsyncProgressWorker {
+ public:
+  Factorizer(Callback *progress, Callback *callback, uint32_t n)
+    : AsyncProgressWorker(callback), progress(progress), n(n)
+    {}
+  ~Factorizer() {}
+
+  // Executes in the new worker thread (background)
+  void Execute (
+      const AsyncProgressWorker::ExecutionProgress&amp; progress) {
+    uint32_t factor = 2;
+    while (n%2 == 0) {
+        progress.Send(
+            reinterpret_cast&lt;const char*&gt;(&amp;factor), 
+            sizeof(uint32_t));
+        n = n/2;
+    }
+    for (uint32_t i = 3; i &lt;= n; i = i+2) {
+        while (n%i == 0) {
+            progress.Send(
+                reinterpret_cast&lt;const char*&gt;(&amp;i), 
+                sizeof(uint32_t));
+            n = n/i;
+        }
+    }
+  }
+
+  // Executes in the event-loop thread
+  void HandleProgressCallback(const char *data, size_t size) {
+    HandleScope scope;  
+    v8::Local&lt;v8::Value&gt; argv[] = {
+          New&lt;v8::Integer&gt;(
+              *reinterpret_cast&lt;int*&gt;(const_cast&lt;char*&gt;(data)))
+    };
+    progress-&gt;Call(1, argv);
+  }
+
+ protected:
+  Callback *progress;
+  uint32_t n;
+};
+
+NAN_METHOD(Factor) {
+  Callback *progress = new Callback(info[1].As&lt;v8::Function&gt;());
+  Callback *callback = new Callback(info[2].As&lt;v8::Function&gt;());
+  AsyncQueueWorker(new Factorizer( callback, progress
+    , To&lt;uint32_t&gt;(info[0]).FromJust()
+  ));
+}
+
+NAN_MODULE_INIT(Init) {
+  Set(target
+    , New&lt;v8::String&gt;(&quot;factorize&quot;).ToLocalChecked()
+    , New&lt;v8::FunctionTemplate&gt;(Factor)-&gt;GetFunction());
+}
+
+NODE_MODULE(factorization, Init)
+</code></pre>
+<p>The code listing above creates the addon, now we can use it as follows (assuming this js file is in the same directory as the cpp / gyp files.</p>
+<pre><code class="lang-javascript">&quot;use strict&quot;; 
+
+const path = require(&quot;path&quot;);
+
+var addon_path = path.join(
+    __dirname, &quot;build/Release/factorization&quot;);
+const worker = require(addon_path);
+
+worker.factorize(9007199254740991, function() {
+    console.log(&quot;Factorization Complete&quot;);
+}, function(factor){
+    console.log(&quot;Factor:  &quot; + factor);
+})
+</code></pre>
+<p>Unfortunately, if you run this on a reasonably fast machine, you&#39;ll get a rather disappointing output!</p>
+<pre><code class="lang-bash">Factorization complete
+</code></pre>
+<p>The problem here is that factorization is actually pretty quick. If you look deep inside AsyncProgressWorker, you&#39;ll see that the code in fact declines to invoke the progress callback if the worker is already completed. In this case, we&#39;ve finished the loop before the <code>lib_uv</code> event loop even gets a chance to run, so no progress is reported. As a quick fix, let&#39;s put a <code>Sleep(1000)</code> at the very end of the <code>Execute</code> function - which should be plenty of time for the event loop to wake up and process our updates:</p>
+<pre><code class="lang-cpp">void Execute (
+    const AsyncProgressWorker::ExecutionProgress&amp; progress) {
+  uint32_t factor = 2;
+  while (n%2 == 0) {
+      progress.Send(
+          reinterpret_cast&lt;const char*&gt;(&amp;factor), 
+          sizeof(uint32_t));
+      n = n/2;
+  }
+  for (uint32_t i = 3; i &lt;= n; i = i+2) {
+      while (n%i == 0) {
+          progress.Send(
+          reinterpret_cast&lt;const char*&gt;(&amp;i), 
+          sizeof(uint32_t));
+          n = n/i;
+      }
+  }
+}
+</code></pre>
+<p>Our output likely won&#39;t be much better though:</p>
+<pre><code class="lang-bash">Factor:  65537
+Factorization complete
+</code></pre>
+<p>What happened to the other factors - such as, 3, 5, 17, and 257? Again, the <code>AsyncProgressWorker</code>&#39;s implementation comes back to bite us here, as there is no functionality build in to handle multiple &quot;progress&quot; updates within one event loop cycle. We ended up calling <code>progress.Send</code> 5 times before the event loop got a chance to process our requests - each time overwriting the &quot;current&quot; progress. Only the last value was propagated.</p>
+<p>We could fix this by re-implementing <code>AsyncProgressWorker</code>, but instead let&#39;s just build a queue to hold each message we send and then ensure that each time our <code>HandleProgressCallback</code> callback is invoked (at least once, if the worker hasn&#39;t already completed) we drain the queue - sending each item to JavaScript via individual progress callback invocations. Note, I&#39;m going to use a thread-safe queue implementation - not a standard C++ queue. This is critical, because in fact what we&#39;re creating is a producer-consumer queue model, where &quot;progress&quot; updates are produced by the background thread and consumed in the <code>HandleProgressCallback</code> (event loop thread).</p>
+<p>Here&#39;s the queue, which will be used in the remaining examples as well, so I&#39;ve templated it. We&#39;ll just use <code>readAll</code> right now, but in later examples we&#39;ll use <code>read</code> to get one item off the queue at a time as well. It uses C++11 synchronization primitives to ensure thread-safety.</p>
+<pre><code class="lang-cpp">template&lt;typename Data&gt;
+class PCQueue
+{
+public:
+    void write(Data data) {
+        while (true) {
+            std::unique_lock&lt;std::mutex&gt; locker(mu);
+            buffer_.push_back(data);
+            locker.unlock();
+            cond.notify_all();
+            return;
+        }
+    }
+    Data read() {
+        while (true)
+        {
+            std::unique_lock&lt;std::mutex&gt; locker(mu);
+            cond.wait(locker, [this](){
+                return buffer_.size() &gt; 0;
+            });
+            Data back = buffer_.front();
+            buffer_.pop_front();
+            locker.unlock();
+            cond.notify_all();
+            return back;
+        }
+    }
+    void readAll(std::deque&lt;Data&gt; &amp; target) {
+        std::unique_lock&lt;std::mutex&gt; locker(mu);
+        std::copy(
+            buffer_.begin(), 
+            buffer_.end(),  
+            std::back_inserter(target));
+        buffer_.clear();
+        locker.unlock();
+    }
+    PCQueue() {}
+private:
+    std::mutex mu;
+    std::condition_variable cond;
+    std::deque&lt;Data&gt; buffer_;
+};
+</code></pre>
+<p>Now let&#39;s put one of these queues into our worker class (named <code>toNode</code>, type <code>PCQueue&lt;uint32_t&gt;</code>) and adapt the callbacks such that the queue is used to store progress messages. First off, let&#39;s create a private function <code>drainQueue</code> which reads all items and sends them to Node by invoking the provided callback function.</p>
+<pre><code class="lang-cpp">// private method within the Factorizer class
+void drainQueue() {
+    HandleScope scope;
+    // drain the queue - since we might only get 
+    // called once for many writes
+    std::deque&lt;uint32_t&gt; contents;
+    toNode.readAll(contents);
+    for(uint32_t &amp; item : contents) {
+        v8::Local&lt;v8::Value&gt; argv[] = {
+          New&lt;v8::Integer&gt;(*reinterpret_cast&lt;int*&gt;(&amp;item))
+        };
+        progress-&gt;Call(1, argv);
+    }
+}
+</code></pre>
+<p>We can now utilize this function in the <code>HandleProgressCallback</code> method, and also in <code>HandleOKCallback</code> - which is a virtual function in <code>AsyncProgressWorker</code> that we&#39;ll now override.</p>
+<pre><code class="lang-cpp">void HandleOKCallback() {
+    drainQueue();
+    callback-&gt;Call(0, NULL);
+}
+
+void HandleProgressCallback(const char *data, size_t size) {
+  drainQueue();
+}
+</code></pre>
+<p>Now let&#39;s work on getting our factors onto this queue. Let&#39;s create a wrapper function that accepts the <code>progress</code> object and the <code>uin32_t</code> data item and adds the data to the queue and fires off a progress event. Notice, the queue is being sent in in <code>progress.Send</code>. In reality, we could send anything - we are effectively ignoring what is being sent into this function, since these calls will result in <code>drainQueue</code> being called. I&#39;ll leave code cleanup to the reader - there are some obvious simplifications we could make if we were willing to mess with the actual implementation of <code>AsynProgressWorker</code> itself.</p>
+<pre><code class="lang-cpp">// protected member of Factorizer
+void writeToNode(
+    const AsyncProgressWorker::ExecutionProgress&amp; progress, 
+    uint32_t &amp; factor){
+
+  toNode.write(factor);
+  progress.Send(
+      reinterpret_cast&lt;const char*&gt;(&amp;toNode), sizeof(toNode));
+}
+</code></pre>
+<p>We&#39;ll replace calls to <code>progress.Send</code> in <code>Execute</code> with our new wrapper, and our output will now capture everything!</p>
+<pre><code class="lang-cpp">void Execute (
+    const AsyncProgressWorker::ExecutionProgress&amp; progress) {
+
+  uint32_t factor = 2;
+  while (n%2 == 0) {
+     writeToNode(progress, factor);
+     n = n/2;
+  }
+  for (uint32_t i = 3; i &lt;= n; i = i+2) {
+     while (n%i == 0) {
+        writeToNode(progress, i);
+        n = n/i;
+     }
+  }
+}
+</code></pre>
+<pre><code class="lang-bash">Factor:  3
+Factor:  5
+Factor:  17
+Factor:  257
+Factor:  65537
+Factorization Complete
+</code></pre>
+<h4 id="creating-the-eventemitter-interface">Creating the EventEmitter interface</h4>
+<p>We have a working asynchronous addon, but our initial aim was to interact with it as an EventEmitter. This is really just an adaptation - it can be done in JavaScript. An EventEmitter should emit arbitrary named events, plus &quot;error&quot; and &quot;close&quot; events. Our addon currently invokes a specific callback when complete and another when there is progress. We must change the addon in 2 ways to facilitate adapting it into an EventEmitter - (1) we should be sending name/value pairs from the addon (event name, event data) instead of just data, and (2) we should have an error callback!</p>
+<p>The first change is pretty easy - instead of sending instances of <code>uint32_t</code>, let&#39;s send a new object - <code>Message</code>. <code>Message</code> will be a name/value pair object - where it&#39;s data is a <em>string</em> to maximize flexibility. The use of templates instead of serializing data to strings is left as an exercise by the reader.</p>
+<pre><code class="lang-cpp">class Message {
+public:
+  string name;
+  string data;
+  Message(string name, string data) : name(name), data(data){}
+};
+</code></pre>
+<p>The queue that we originally placed in the <code>Factorizer</code> will now hold <code>Message</code> objects rather than <code>uint32_t</code>. When sending data to node, we&#39;ll construct our message object with the name &quot;factor&quot;.</p>
+<p>The second change is simply the addition of an error callback. <code>AsyncProgressWorker</code> already has a built-in <code>HandleErrorCallaback</code> virtual function that we can override to invoke a JS callback when errors occur. We&#39;ll need to create a new protected member, <code>error_callback</code>, which will be passed to <code>Factorizer</code>&#39;s constructor when launching the addon.</p>
+<pre><code class="lang-cpp">void HandleErrorCallback() {
+    HandleScope scope;
+
+    v8::Local&lt;v8::Value&gt; argv[] = {
+        // ErrorMessage() is method of `AsyncWorker`, 
+        // `AsyncProgressWorker`&#39;s base class.
+        v8::Exception::Error(New&lt;v8::String&gt;(ErrorMessage())
+            .ToLocalChecked())
+    };
+    error_callback-&gt;Call(1, argv);
+  }
+</code></pre>
+<p>Here is the complete code listing, including the modified constructor and Node/nan boilerplate code to accommodate the new error callback.</p>
+<pre><code class="lang-cpp">class Factorizer : public AsyncProgressWorker {
+ public:
+  Factorizer(Callback *progress, Callback *callback, 
+    Callback *error_callback, uint32_t n)
+    : AsyncProgressWorker(callback), progress(progress), 
+    error_callback(error_callback), n(n)
+    {
+
+    }
+  ~Factorizer() {}
+
+  void Execute (
+      const AsyncProgressWorker::ExecutionProgress&amp; progress) {
+
+    uint32_t factor = 2;
+    while (n%2 == 0) {
+        send_factor(progress, factor);
+        n = n/2;
+    }
+    for (uint32_t i = 3; i &lt;= n; i = i+2) {
+        while (n%i == 0) {
+            send_factor(progress, i);
+            n = n/i;
+        }
+    }
+  }
+
+  void HandleOKCallback() {
+    drainQueue();
+    callback-&gt;Call(0, NULL);
+  }
+
+  void HandleProgressCallback(const char *data, size_t size) {
+    drainQueue();
+  }
+
+ void HandleErrorCallback() {
+    HandleScope scope;
+    v8::Local&lt;v8::Value&gt; argv[] = {
+      v8::Exception::Error(New&lt;v8::String&gt;(ErrorMessage())
+        .ToLocalChecked())
+    };
+    error_callback-&gt;Call(1, argv);
+  }
+
+
+ protected:
+  Callback *progress;
+  Callback *error_callback;
+  uint32_t n;
+  PCQueue&lt;Message&gt; toNode;
+
+  void send_factor(
+      const AsyncProgressWorker::ExecutionProgress&amp; progress, 
+      long long factor) {
+
+        Message tosend(&quot;factor&quot;, std::to_string(factor));
+        writeToNode(progress, tosend);
+  }
+
+  void writeToNode(
+      const AsyncProgressWorker::ExecutionProgress&amp; progress, 
+      Message &amp; msg){
+
+    toNode.write(msg);
+    progress.Send(
+        reinterpret_cast&lt;const char*&gt;(&amp;toNode), sizeof(toNode));
+  }
+
+
+  void drainQueue() {
+      HandleScope scope;
+      // drain the queue - since we might only get 
+      // called once for many writes
+      std::deque&lt;Message&gt; contents;
+      toNode.readAll(contents);
+
+      for(Message &amp; msg : contents) {
+          v8::Local&lt;v8::Value&gt; argv[] = {
+            New&lt;v8::String&gt;(msg.name.c_str()).ToLocalChecked(), 
+            New&lt;v8::String&gt;(msg.data.c_str()).ToLocalChecked()
+          };
+          progress-&gt;Call(2, argv);
+      }
+  }
+};
+
+NAN_METHOD(Factor) {
+  Callback *progress = new Callback(info[1].As&lt;v8::Function&gt;());
+  Callback *callback = new Callback(info[2].As&lt;v8::Function&gt;());
+  Callback *error_callback = 
+    new Callback(info[3].As&lt;v8::Function&gt;());
+
+  AsyncQueueWorker(new Factorizer(
+      callback
+    , progress
+    , error_callback
+    , To&lt;uint32_t&gt;(info[0]).FromJust()
+  ));
+}
+</code></pre>
+<h3 id="building-the-js-adapter">Building the JS adapter</h3>
+<p>Our final piece is to wrap up this addon in an EventEmitter. For now, it will be a simple JavaScript function in factorization.js, but later we&#39;ll adapt this all so it&#39;s reusable.</p>
+<pre><code class="lang-javascript">
+const EventEmitter = require(&#39;events&#39;);
+
+var make_factorizer = function(n) {
+    var addon_path = path.join(
+        __dirname, &quot;build/Release/factorization&quot;);
+
+    const worker = require(addon_path);
+    var emitter = new EventEmitter();
+    worker.factorize(n,
+        function () {
+            emitter.emit(&quot;close&quot;);
+        },
+        function(event, value){
+            emitter.emit(event, value);
+        }, 
+        function(error) {
+            emitter.emit(&quot;error&quot;, error);
+        });
+
+    return emitter;
+}
+</code></pre>
+<p>Notice that we are not returning the factorizer worker - only the emitter that has been used in the complete, progress, and error callbacks passed to the worker. Our main JavaScript code can now interact with the addon via this emitter:</p>
+<pre><code class="lang-javascript">var addon = make_factorizer(9007199254740991);
+
+addon.on(&#39;factor&#39;, function(factor){
+    console.log(&quot;Factor:  &quot; + factor);
+});
+
+addon.on(&#39;close&#39;, function() {
+    console.log(&quot;Factorization is complete&quot;);
+})
+addon.on(&#39;error&#39;, function(e) {
+    console.log(e);
+});
+</code></pre>
+<p>We&#39;ll get the same output as last time, now with a EventEmitter interface.</p>
+<h3 id="generalizing-event-based-addons">Generalizing Event-based Addons</h3>
+<p>Before moving forward with more examples, it will be helpful to see how we can generalize this structure to make creating additional addons simpler. Any addon based on this interface is going to have some common features:</p>
+<ol>
+<li>It must accept a complete, progress, and error callback</li>
+<li>It likely will need some initialization values (for factorization, N - the number to factor).</li>
+<li>It will send data back to Node using the writeToNode method created above.</li>
+</ol>
+<p>To make this all reusable, we&#39;ll create a header file (<code>streaming-worker.h</code>). We&#39;ll define utility classes (<code>PCQueue</code> and <code>Message</code>) within it. In addition, we&#39;ll create our base class <code>StreamingWorker</code>, which inherits <code>AsyncProgressWorker</code> and provides the common facilities, such as the <code>HandleOkCallback</code>, <code>HandleProgressCallback</code>, <code>HandleErrorCallback</code>, and <code>sendToNode</code> methods. Our individual addons will basically just inherit from <code>StreamingWorker</code>, overriding the <code>Execute</code> method and providing the appropriate constructor. Here is the code listing for <code>StreamingWorker</code> - however I&#39;ve only written prototypes below for methods that are the same as in the implementation of the Factorization example. Utilities like <code>Message</code> and <code>PCQueue</code> are also omitted, but would be the same as before.</p>
+<pre><code class="lang-cpp">class StreamingWorker : public AsyncProgressWorker {
+ public:
+  StreamingWorker(Callback *progress,  Callback *callback,  
+    Callback *error_callback)
+    : AsyncProgressWorker(callback), progress(progress), 
+        error_callback(error_callback)
+    {
+      // Notice no 4th parameter - initialization variables 
+      // will be handled by classes extending this.
+    }
+
+  // same as in factorization example
+  ~StreamingWorker(); 
+
+  // same as in factorization example
+  void HandleErrorCallback(); 
+
+  // same as in factorization example
+  void HandleOKCallback() ; 
+
+  // same as in factorization example
+  void HandleProgressCallback(const char *data, size_t size) ; 
+
+ protected:
+
+  // same as in factorization example
+  void writeToNode(
+      const AsyncProgressWorker::ExecutionProgress&amp; progress, 
+      Message &amp; msg); 
+
+  // same as in factorization example
+  void drainQueue();
+
+  Callback *progress;
+  Callback *error_callback;
+  PCQueue&lt;Message&gt; toNode;
+  bool input_closed;
+};
+</code></pre>
+<p>This refactors our implementation of the original Factorization class. The code below has the same functionality as the previous implementation, however the 4th parameter for creating the addon is a JavaScript object instead of a plain integer - in order to allow other initialization parameters to be used. This isn&#39;t useful for factorization, but as we&#39;ll see in a moment, the constructor signature will remain constant across addons - so it pays to be a bit flexible.</p>
+<pre><code class="lang-cpp">class Factorization : public StreamingWorker {
+  public:
+    Factorization(Callback *data, Callback *complete, 
+      Callback *error_callback,  v8::Local&lt;v8::Object&gt; &amp; options) 
+          : StreamingWorker(data, complete, error_callback){
+
+        N = -1;
+        if (options-&gt;IsObject() ) {
+          v8::Local&lt;v8::Value&gt; n_ = 
+            options-&gt;Get(New&lt;v8::String&gt;(&quot;n&quot;).ToLocalChecked());
+
+          if ( n_-&gt;IsNumber() ) {
+            N = n_-&gt;NumberValue();
+          }
+        }
+
+        if ( N &lt; 0 ) {
+          SetErrorMessage(&quot;Cannot compute prime factorization &quot;
+            + &quot;of negative numbers (overflowed long long?)!&quot;);
+        }
+    }
+
+    void send_factor(
+        const AsyncProgressWorker::ExecutionProgress&amp; progress, 
+        long long factor) {
+
+        Message tosend(&quot;factor&quot;, std::to_string(factor));
+        writeToNode(progress, tosend);
+    }
+
+    void Execute (
+        const AsyncProgressWorker::ExecutionProgress&amp; progress) {
+
+      long long n = N;
+      while (n%2 == 0)
+      {
+        send_factor(progress, 2);
+        n = n/2;
+      }
+
+      for (long long i = 3; i &lt;= n; i = i+2) {
+          while (n%i == 0) {
+            send_factor(progress, i);
+            n = n/i;
+          }
+      }
+    }
+  private:
+    long long N;
+};
+</code></pre>
+<p>One additional issue with how we have the C++ setup is that the only &quot;entry&quot; point we&#39;ve provided for is the constructor - there is no facility to control the addon after it has been created. We&#39;ll fix that by actually wrapping our addon classes using <code>Nan::ObjectWrap</code>, which will allow us to treat our addon like a real object, with methods (to be added in later examples). This will also help facilitate generic (reusable) Node/Nan boilerplate.</p>
+<p>The first step is to create a StreamingWorkerWrapper class. This class will wrap <em>any</em> StreamingWorker addon - we won&#39;t have to extend it in any way. This code uses all the concepts we saw in Chapters 5 and 6. Note that in it&#39;s current state there are no fields (methods) associated with the wrapper - but that will change shortly.</p>
+<pre><code class="lang-cpp">class StreamWorkerWrapper : public Nan::ObjectWrap {
+ public:
+  static NAN_MODULE_INIT(Init) {
+    v8::Local&lt;v8::FunctionTemplate&gt; tpl = 
+        Nan::New&lt;v8::FunctionTemplate&gt;(New);
+    tpl-&gt;SetClassName(
+        Nan::New(&quot;StreamingWorker&quot;).ToLocalChecked());
+    tpl-&gt;InstanceTemplate()-&gt;SetInternalFieldCount(0);
+
+    constructor().Reset(
+        Nan::GetFunction(tpl).ToLocalChecked());
+
+    Nan::Set(target, 
+        Nan::New(&quot;StreamingWorker&quot;).ToLocalChecked(),
+        Nan::GetFunction(tpl).ToLocalChecked());
+  }
+
+ private:
+  explicit StreamWorkerWrapper(StreamingWorker * worker) 
+    : _worker(worker) {}
+  ~StreamWorkerWrapper() {}
+
+  static NAN_METHOD(New) {
+    if (info.IsConstructCall()) {
+      Callback *data_callback = 
+        new Callback(info[0].As&lt;v8::Function&gt;());
+      Callback *complete_callback = 
+        new Callback(info[1].As&lt;v8::Function&gt;());
+      Callback *error_callback = 
+        new Callback(info[2].As&lt;v8::Function&gt;());
+      v8::Local&lt;v8::Object&gt; options = info[3].As&lt;v8::Object&gt;();
+
+      StreamWorkerWrapper *obj = new StreamWorkerWrapper(
+            create_worker(data_callback, complete_callback, 
+            error_callback, options));
+
+      obj-&gt;Wrap(info.This());
+      info.GetReturnValue().Set(info.This());
+
+      // start the worker
+      AsyncQueueWorker(obj-&gt;_worker);
+
+    } else {
+      const int argc = 3;
+      v8::Local&lt;v8::Value&gt; argv[argc] = {
+        info[0], info[1], info[2]
+      };
+
+      v8::Local&lt;v8::Function&gt; cons = Nan::New(constructor());
+      info.GetReturnValue().Set(cons-&gt;NewInstance(argc, argv));
+    }
+  }
+
+  static inline Nan::Persistent&lt;v8::Function&gt; &amp; constructor() {
+    static Nan::Persistent&lt;v8::Function&gt; my_constructor;
+    return my_constructor;
+  }
+
+  StreamingWorker * _worker;
+};
+</code></pre>
+<p>The principal point of extension in this wrapper is the call to <code>create_worker</code> within the constructor method. This method is where individual addons will be able to instantiate the actual implementation of <code>StreamingWorker</code>. The prototype of <code>create_worker</code> will be defined in <code>streaming-worker.h</code>, however the <em>implementation</em> will be within the addon&#39;s own source. The function passes the 3 callbacks plus the 4th argument, which will be an object containing initialization parameters.</p>
+<p>Here&#39;s the <code>create_worker</code> implementation for the factorization addon (note, it&#39;s not a member method of Factorizer, it&#39;s standalone).</p>
+<pre><code class="lang-cpp">StreamingWorker * create_worker(
+    Callback *data, Callback *complete , 
+    Callback *error_callback, v8::Local&lt;v8::Object&gt; &amp; options) {
+ return new Factorization(data, complete, error_callback, options);
+}
+</code></pre>
+<p>The only other thing each addon needs to do is expose the wrapper class to JavaScript using typical <code>nan</code> boilerplate.</p>
+<p>Here&#39;s a breif review of the organization:</p>
+<p><em>In <code>streaming-worker.h</code> - intended to be reused in each addon</em></p>
+<ol>
+<li>Implementation of <code>PQueue</code>, <code>Message</code> classes</li>
+<li>Implementation of <code>StreamingWorker</code> abstract class - each addon will extend this and implement a constructor and <code>Execute</code> method</li>
+<li>Implementation of <code>StreamingWorkerWrapper</code> which will be exposed to JavaScript by each addon</li>
+</ol>
+<p><em>In an addon&#39;s source code, we&#39;d include <code>streaming-worker.h</code> and then...</em></p>
+<ol>
+<li>Extend <code>StreamingWorker</code></li>
+<li>Provide an implementation of <code>create_worker</code> which <code>StreamingWorkerWrapper</code> will call</li>
+<li><code>NODE_MODULE(&lt;addon name&gt;, StreamWorkerWrapper::Init)</code> to expose the wrapper to Node.js. Note, each addon will have a different name.</li>
+</ol>
+<p>With the C++ refactored, we have some changes to make to the JavaScript adapter. Instead of calling <code>factor</code> on a worker object returned by the <code>require</code> of the addon, now the addon returns the new worker object (wrapper) constructor. The rest of the JavaScript adapter is already highly reusable - there is nothing about the <code>make_factorizer</code> function above that is tied to factorization in any way in fact. All we need to do is make it parameterized so it can load any C++ addon.</p>
+<p>We&#39;ll create a new module, in a separate file (<code>index.js</code> for now). It will export a single factory function, quite similar to <code>make_factorizer</code> from earlier, however it will accept the path to the C++ addon, and an object for initialization variables (as opposed to only a number). As a final adjustment, instead of only returning the emitter, we&#39;ll return an object containing the emitter, so we have room to extend functionality.</p>
+<pre><code class="lang-javascript">module.exports = function(cpp_entry_point, opts) {
+    const factory = require(cpp_entry_point);
+    var emitter = new EventEmitter();
+    var worker = new factory.StreamingWorker(
+        function () {
+            emitter.emit(&quot;close&quot;);
+        },
+        function(event, value){
+            emitter.emit(event, value);
+        }, 
+        function(error) {
+            emitter.emit(&quot;error&quot;, error);
+        }, opts);
+    var retval = {
+        from = emitter
+    }
+    return retval;
+}
+</code></pre>
+<p>Now the individual JavaScript programs will require the JS adapter code in index.js. The factorization.js file from earlier would look something like this:</p>
+<pre><code class="lang-javascript">// this contains the JS adapter code from above
+const streaming_worker = require(&quot;./index.js&quot;); 
+
+var addon_path = path.join(
+    __dirname, &quot;build/Release/factorization&quot;);
+const factorizer = worker(addon_path, {n: 9007199254740991});
+
+factorizer.from.on(&#39;factor&#39;, function(factor){
+    console.log(&quot;Factor:  &quot; + factor);
+});
+
+factorizer.from.on(&#39;error&#39;, function(e) {
+    console.log(e);
+});
+</code></pre>
+<h3 id="emitting-json-from-c-">Emitting JSON from C++</h3>
+<p>Now that we have a fairly easy way to create EventEmitter interfaces to addons, lets look at how we can send more detailed data from our addon to JavaScript - using objects.</p>
+<p>You surely noticed that the <code>Message</code> class created in the previous section is designed to only carry strings as data. While the C++ programmers among us might be tempted to convert <code>Message</code> to a templatized class, remember that these messages are destined to become events over on the JavaScript side. That means that any data we wish to send must be converted to V8 data types before they are sent back. For complex C++ objects, you surely see how this can start to become difficult. In reality, most use cases would be satisfied by just being able to send a simple (no functions) JavaScript object back from C++. We can do this by sending stringified JSON - and parsing it when it arrives in our JavaScript code using <code>JSON.parse</code>.</p>
+<p>How do you create stringified JSON in C++? Well, you could do it yourself - but there are some really excellent C++ libraries out there that will do the work for you. I highly recommend <code>json</code>, written by Niels Lohmann. You can obtain the source code at <a href="https://github.com/nlohmann/json">https://github.com/nlohmann/json</a>.</p>
+<p>If you&#39;ve ever worked with sensor/tracking devices (for example, a head mounted display reporting position/orientation of user&#39;s head), you know that often their primary SDK is written in C++. For applications using these devices, you either have to write them in C++ or find a way to bridge the languages. For virtual reality, for example, one might find themselves using Node.js driving an <a href="">electron</a> app rendering 3D scenes with <a href="">three.js</a>. A C++ addon to emit tracking data is a great solution in this case. As an exercise, let us now build a simulated tracking/sensor addon that reports random x/y/z coordinates (we&#39;ll ignore orientation) at regular intervals. The addon can emit JSON strings, which we&#39;ll parse into regular objects once they get to JavaScript.</p>
+<h4 id="step-1-build-the-c-addon-extending-streamingworker-">Step 1 - Build the C++ Addon (extending StreamingWorker)</h4>
+<p>The first step is of course creating <code>binding.gyp</code> and <code>package.json</code>. These files are essentially the same as in the factorization example above, so I won&#39;t repeat them here - just remember to change the addon <code>target_name</code> to <code>sensor_sim</code>. In addition, make sure you&#39;ve added the directory where <code>streaming-worker.h</code> from the previous example can be found. You can do this by adding an entry to the <code>include_dirs</code> entry. We get down to business when we create the actual C++ code, let&#39;s put that in <code>sensor_sim.cpp</code>.</p>
+<p>We start out by including some libraries - <code>streaming-worker.h</code> and now also <code>json.hpp</code>, which needs to be downloaded into the local directory (<a href="https://github.com/nlohmann/json">https://github.com/nlohmann/json</a>). I&#39;m also including some C++ additional headers so we can emit randomized position data at set intervals of time.</p>
+<pre><code class="lang-cpp">#include &lt;iostream&gt;
+#include &lt;chrono&gt;
+#include &lt;random&gt;
+#include &lt;thread&gt;
+
+// Make sure binding.gyp can find this!
+#include &quot;streaming-worker.h&quot;
+
+//download from https://github.com/nlohmann/json 
+#include &quot;json.hpp&quot;  
+
+using namespace std;
+using json = nlohmann::json;
+...
+</code></pre>
+<p>Now let&#39;s create the worker class, and the required <code>create_worker</code> factory function:</p>
+<pre><code class="lang-cpp">class Sensor : public StreamingWorker {
+  public:
+    Sensor(Callback *data, Callback *complete, 
+        Callback *error_callback) 
+          : StreamingWorker(data, complete, error_callback){
+
+       // no extra options, but certainly tracker name, 
+       // perhaps position offsets could be passed in here..
+    }
+
+    void send_sample(
+        const AsyncProgressWorker::ExecutionProgress&amp; progress, 
+        double x, double y, double z) {
+
+        json sample;
+        sample[&quot;position&quot;][&quot;x&quot;] = x;
+        sample[&quot;position&quot;][&quot;y&quot;] = y;
+        sample[&quot;position&quot;][&quot;z&quot;] = z;
+        Message tosend(&quot;position_sample&quot;, sample.dump());
+        writeToNode(progress, tosend);
+    }
+
+    void Execute (
+        const AsyncProgressWorker::ExecutionProgress&amp; progress) {
+
+      std::random_device rd;
+      std::uniform_real_distribution&lt;double&gt; pos_dist(-1.0, 1.0);
+      while (true) {
+        send_sample(progress, 
+            pos_dist(rd), pos_dist(rd), pos_dist(rd));
+
+        std::this_thread::sleep_for(chrono::milliseconds(50));
+      }
+    }
+};
+
+StreamingWorker * create_worker(Callback *data
+    , Callback *complete
+    , Callback *error_callback
+    , v8::Local&lt;v8::Object&gt; &amp; options) {
+ return new Sensor(data, complete, error_callback);
+}
+
+NODE_MODULE(sensor_sim, StreamWorkerWrapper::Init)
+</code></pre>
+<p>The interesting code is happening in <code>send_sample</code>, which is called from <code>Execute</code>. The <code>json</code> library allows you to build JSON in a very convenient, map-like API. Once we have the <code>sample</code> constructed, we call <code>dump()</code> to serialize to a string.</p>
+<h4 id="step-2-using-sensor-in-javascript">Step 2 - Using sensor in JavaScript</h4>
+<p>Next we need to look at the JavaScript side. Again, since we put in so much effort in the previous example to create a reusable module, the code is really quite simple. Here&#39;s the complete listing for instantiating our sensor addon and reporting to the console any position samples emitted.</p>
+<pre><code class="lang-javascript">&quot;use strict&quot;; 
+
+const worker = require(&quot;streaming-worker&quot;);
+const path = require(&quot;path&quot;);
+
+const addon_path = path.join(__dirname, &quot;build/Release/sensor_sim&quot;);
+const sensor = worker(addon_path);
+
+sensor.from.on(&#39;position_sample&#39;, function(sample){
+    console.log(JSON.parse(sample));
+});
+</code></pre>
+<p>Our sensor never actually stops emitting position data, so to stop it you&#39;ll need to do a <code>ctrl+c</code> (we&#39;ll fix this in a bit). The output should look something like this:</p>
+<pre><code class="lang-bash">{ position: 
+   { x: -0.770311412681532,
+     y: -0.770311412681532,
+     z: -0.770311412681532 }}
+{ position: 
+   { x: 0.456215735702525,
+     y: 0.456215735702525,
+     z: 0.456215735702525 }}
+....
+</code></pre>
+<h2 id="streaming-c-output">Streaming C++ output</h2>
+<p>The <code>EventEmitter</code> interface is probably a good choice for the two examples above - however there are times where you&#39;d prefer to treat the data created as a stream, perhaps because you want it to get written to a (log) file. In fact, our sensor example might be a good candidate for this - sensor data is often logged to files or steamed to network sockets! Thankfully, the effort of turning event emitters into streams is pretty modest - we can utilize the <a href="https://github.com/substack/emit-stream"><code>event-stream</code></a> to easily create streams from a proper <code>EventEmitter</code>. Unlike previous examples, making these changes is just a JavaScript effort (we&#39;ll place it in the <code>streaming-worker</code> JS module) - the C++ doesn&#39;t change.</p>
+<p>Recall from above, we&#39;ve create a reusable module that builds the <code>EventEmitter</code> around an addon specified by a file path:</p>
+<pre><code class="lang-javascript">// inside index.js (streaming-worker module)
+module.exports = function(cpp_entry_point, opts) {
+    const factory = require(cpp_entry_point);
+    var emitter = new EventEmitter();
+    var worker = new factory.StreamingWorker(
+        function () {
+            emitter.emit(&quot;close&quot;);
+        },
+        function(event, value){
+            emitter.emit(event, value);
+        }, 
+        function(error) {
+            emitter.emit(&quot;error&quot;, error);
+        }, opts);
+    var retval = {
+        from = emitter
+    }
+    return retval;
+}
+</code></pre>
+<p>Let&#39;s now add a function to the <code>from</code> object to turn it into a stream. We could do this inside the factory method itself, however it&#39;s probably wasteful to create streams that won&#39;t be used, so we&#39;ll make it an explicit function call by the user of the module.</p>
+<pre><code class="lang-javascript">const emitStream = require(&#39;emit-stream&#39;);
+const through = require(&#39;through&#39;);
+
+module.exports = function(cpp_entry_point, opts) {
+    ... configure the emitter...
+    var retval = {
+        from = emitter
+    }
+
+    retval.from.stream = function() {
+       return emitStream(retval.from).pipe(
+         through(function (data) {
+           if ( data[0] == &quot;close&quot;){
+              this.end();
+           }
+           else {
+              this.queue(data);
+           }
+        }));
+
+    }
+
+    return retval;
+}
+</code></pre>
+<p>The <code>emit-stream</code> library exports a function <code>emitStream</code> which accepts an <code>EventEmitter</code> (in this case <code>retval.from</code>) and returns a readable stream. You can see the details of <code>emit-stream</code> at <a href="https://github.com/substack/emit-stream">https://github.com/substack/emit-stream</a>. One relevant detail is that events (name/value pairs) are converted to raw arrays.</p>
+<p>We know that when a &#39;close&#39; event gets emitted from our addon the stream itself should close, so we use <code>through</code> to capture those events and actually close the stream. Now whenever our addon emits a &#39;close&#39; event, the output stream will properly close.</p>
+<p>In JavaScript, we can now create the output stream and use it just like any other readable stream. For example, if we want the position data streamed to a file (positions.log), we just create a writable file stream. Since file streams don&#39;t accept raw JavaScript objects (such as the arrays being put onto the stream by <code>emit-stream</code>, we can use the <code>JSONStream</code> module to transform the streamed arrays into JSON strings.</p>
+<pre><code class="lang-javascript">const worker = require(&quot;streaming-worker&quot;);
+const through = require(&#39;through&#39;);
+const JSONStream = require(&#39;JSONStream&#39;);
+const path = require(&quot;path&quot;);
+
+const addon_path = path.join(
+    __dirname, &quot;build/Release/sensor_sim&quot;);
+
+const sensor = worker(addon_path);
+
+var fs = require(&#39;fs&#39;);
+var wstream = fs.createWriteStream(&#39;positions.log&#39;);
+const out = sensor.from.stream();
+out.pipe(JSONStream.stringify()).pipe(wstream);
+</code></pre>
+<h3 id="stopping-a-streaming-addon">Stopping a streaming addon</h3>
+<p>You&#39;ll notice that the output in positions.log isn&#39;t pretty - the whole file should be a JSON stringified array - however it&#39;s incomplete, missing the closing <code>]</code>. That&#39;s because our sensor addon never stops (I assume you stopped it with ctrl+c), and the JSON stream is never properly terminated. We need a way to stop an addon - so let&#39;s take advantage of our <code>StreamingWorkerWrapper</code> to build in a <code>close</code> function, which sets a flag in our <code>StreamingWorker</code> (or in this case, <code>Sensor</code>). Inside <code>streaming-worker</code>, let&#39;s add the boolean flag first:</p>
+<pre><code class="lang-cpp">
+class StreamingWorker : public AsyncProgressWorker {
+ public:
+    ...
+
+    void close() {
+      closed = true;
+    }
+
+    ...
+ protected:
+    bool isClosed() {
+      return closed;
+    } 
+
+ private:
+    bool closed;
+</code></pre>
+<p>We want to allow JavaScript to call <code>close</code>, so let&#39;s add that to the wrapper.</p>
+<pre><code class="lang-cpp">class StreamWorkerWrapper : public Nan::ObjectWrap {
+ public:
+  static NAN_MODULE_INIT(Init) {
+    v8::Local&lt;v8::FunctionTemplate&gt; tpl = 
+        Nan::New&lt;v8::FunctionTemplate&gt;(New);
+    tpl-&gt;SetClassName(
+        Nan::New(&quot;StreamingWorker&quot;).ToLocalChecked());
+    tpl-&gt;InstanceTemplate()-&gt;SetInternalFieldCount(1);   
+
+    SetPrototypeMethod(tpl, &quot;close&quot;, closeInput); 
+
+    constructor().Reset(
+        Nan::GetFunction(tpl).ToLocalChecked());
+
+    Nan::Set(target, 
+        Nan::New(&quot;StreamingWorker&quot;).ToLocalChecked(),
+        Nan::GetFunction(tpl).ToLocalChecked());
+  }
+  ... rest omitted, it&#39;s the same as before ...
+};
+
+static NAN_METHOD(closeInput) {
+    StreamWorkerWrapper* obj = 
+        Nan::ObjectWrap::Unwrap&lt;StreamWorkerWrapper&gt;(info.Holder());
+    obj-&gt;_worker-&gt;close();
+}
+</code></pre>
+<p>Now we can alter our <code>Execute</code> function in <code>Sensor</code> to stop when <code>isClosed</code> returns true:</p>
+<pre><code class="lang-cpp">void Execute (
+    const AsyncProgressWorker::ExecutionProgress&amp; progress) {
+
+  std::random_device rd;
+  std::uniform_real_distribution&lt;double&gt; pos_dist(-1.0, 1.0);
+  while (!closed()) {
+    send_sample(progress, 
+        pos_dist(rd), pos_dist(rd), pos_dist(rd));
+
+    std::this_thread::sleep_for(chrono::milliseconds(50));
+  }
+}
+</code></pre>
+<p>Let&#39;s also put a <code>close</code> method in the object returned by the factory method in the <code>streaming-worker</code> module:</p>
+<pre><code class="lang-javascript">....
+
+retval.close = function (){
+   worker.closeInput();
+}
+
+return retval;
+</code></pre>
+<p>Finally, let&#39;s close the sensor after 5 seconds in our JavaScript program:</p>
+<pre><code class="lang-javascript">const worker = require(&quot;streaming-worker&quot;);
+const through = require(&#39;through&#39;);
+const JSONStream = require(&#39;JSONStream&#39;);
+const path = require(&quot;path&quot;);
+
+const addon_path = path.join(__dirname, &quot;build/Release/sensor_sim&quot;);
+const sensor = worker(addon_path);
+
+var fs = require(&#39;fs&#39;);
+var wstream = fs.createWriteStream(&#39;positions.log&#39;);
+const out = sensor.from.stream();
+out.pipe(JSONStream.stringify()).pipe(wstream); 
+
+setTimeout(function(){sensor.close()}, 5000);
+</code></pre>
+<p>Now positions.log will be a nicely formatted JSON array. Of course, we could use <code>through</code> to further transform the output sent to this file - the sky is the limit!</p>
+<p>As a side note, C++ has streams too... and you might be wondering if you could change the C++ addon interface to do something like this:</p>
+<pre><code class="lang-cpp">toNode &lt;&lt; msg;
+</code></pre>
+<p>Instead of using the <code>writeToNode</code> method. The answer is - of course! To do so requires extending C++ i/o stream and stream buffer classes, which is a big topic in it&#39;s own right. I&#39;ll leave that as a C++ exercise for the ambitious reader.</p>
+<h2 id="emitting-events-to-c-">Emitting events to C++</h2>
+<p>So far we&#39;ve created addons that either take no input (sensor) or use only initialization variables to get information from JavaScript (factoring). What if we want to move lots of data, over time, to our addon? We can reverse the event and streaming API&#39;s and emit events/stream data from JavaScript <em>to C++</em> as well. We can leverage a lot of the work we&#39;ve already done in fact (<code>Message</code> and <code>PCQueue</code>, along with <code>StreamingWorker</code> and <code>StreamingWorkerWrapper</code>).</p>
+<p>Lets start by building the EventEmitter API. The most difficult part to this is the fact that we can no longer borrow functionality from <code>nan</code>&#39;s <code>AsyncProgressWorker</code>, as it only supports sending periodic progress <em>from C++</em>, not to it. Our first step is to build the ability to move a message from JavaScript to C++, and we&#39;ll do this by exposing a method in our <code>StreamingWorkerWrapper</code> which adds a message to <em>another</em> queue inside <code>StreamingWorker</code> which will now be used to hold data flowing into the addon.</p>
+<p>Here is the only change to <code>StreamingWorker</code> - adding a new queue object.</p>
+<pre><code class="lang-cpp">class StreamingWorker : public AsyncProgressWorker {
+  public:
+    ... most is exactly the same...
+
+    PCQueue&lt;Message&gt; fromNode;
+
+    ....
+};
+</code></pre>
+<p>Purists would likely rather make this queue private and create an accessor, which is fine too. Here&#39;s the wrapper code, which now has 2 internal fields.</p>
+<pre><code class="lang-cpp">class StreamWorkerWrapper : public Nan::ObjectWrap {
+ public:
+  static NAN_MODULE_INIT(Init) {
+    v8::Local&lt;v8::FunctionTemplate&gt; tpl = 
+        Nan::New&lt;v8::FunctionTemplate&gt;(New);
+    tpl-&gt;SetClassName(
+        Nan::New(&quot;StreamingWorker&quot;).ToLocalChecked());
+    tpl-&gt;InstanceTemplate()-&gt;SetInternalFieldCount(1);  
+
+    SetPrototypeMethod(tpl, &quot;close&quot;, closeInput);  
+    SetPrototypeMethod(tpl, &quot;sendToAddon&quot;, sendToAddon);
+
+    constructor().Reset(
+        Nan::GetFunction(tpl).ToLocalChecked());
+    Nan::Set(target, 
+        Nan::New(&quot;StreamingWorker&quot;).ToLocalChecked(),
+        Nan::GetFunction(tpl).ToLocalChecked());
+  }
+  ... rest omitted, it&#39;s the same as before ...
+};
+
+static NAN_METHOD(sendToAddon) {
+    v8::String::Utf8Value name(info[0]-&gt;ToString());
+    v8::String::Utf8Value data(info[1]-&gt;ToString());
+    StreamWorkerWrapper* obj = 
+        Nan::ObjectWrap::Unwrap&lt;StreamWorkerWrapper&gt;(info.Holder());
+    obj-&gt;_worker-&gt;fromNode.write(Message(*name, *data));
+  }
+</code></pre>
+<p>Let&#39;s now build another example that uses this new functionality - a C++ accumulator. For this example, our C++ addon will collect data sent from JavaScript and when a sentinel value is received (-1) it will emit a <code>sum</code> event with the sum of all numbers sent to it. We&#39;ve been through building out new addons now a few times, so I&#39;ll only present the Accumulator class.</p>
+<pre><code class="lang-cpp">class Accumulate : public StreamingWorker {
+  public:
+    Accumulate(Callback *data, Callback *complete, 
+        Callback *error_callback, 
+        v8::Local&lt;v8::Object&gt; &amp; options) 
+        : StreamingWorker(data, complete, error_callback){
+
+        sum = 0;
+        filter = &quot;&quot;;
+        if (options-&gt;IsObject() ) {
+          v8::Local&lt;v8::Value&gt; filter_ = options-&gt;Get(
+              New&lt;v8::String&gt;(&quot;filter&quot;).ToLocalChecked());
+
+          if ( filter_-&gt;IsString() ) {
+            v8::String::Utf8Value s(filter_);
+            filter = *s;
+          }
+        }
+    }
+    ~Accumulate(){}
+
+    bool filter_by_name(string name) {
+      return ( filter.empty() || name == filter);
+    }
+
+    void Execute (const AsyncProgressWorker::ExecutionProgress&amp; progress) {
+      int value ;
+      do {
+        Message m = fromNode.read();
+        value = std::stoi(m.data);
+        if ( filter_by_name(m.name) || value &lt;= 0) {
+          if ( value &gt; 0 ){
+            sum += value;
+          }
+          else {
+            Message tosend(&quot;sum&quot;, std::to_string(sum));
+            writeToNode(progress, tosend);
+          }
+        }
+      } while (value &gt; 0);
+    }
+  private:
+    int sum;
+    string filter;
+};
+</code></pre>
+<p>Note I&#39;ve also added an optional filter to this class, so it will only accumulate events with a name that matches it&#39;s filter. If no filter is specified in the initialization object then all events will be accumulated. The accumulator&#39;s <code>Execute</code> function just sits in a loop and reads individual messages from the <code>fromNode</code> queue. Recall, the <code>read</code> method on <code>PCQueue</code> is blocking.</p>
+<p>Now let&#39;s build a simple JavaScript program to send a few numbers to the addon. We need to go into our <code>streaming-worker</code> module and expose a method to actually invoke the <code>sendToAddon</code> method we&#39;ve added.</p>
+<pre><code class="lang-javascript">const emitStream = require(&#39;emit-stream&#39;);
+const through = require(&#39;through&#39;);
+
+module.exports = function(cpp_entry_point, opts) {
+    const factory = require(cpp_entry_point);
+    var emitter = new EventEmitter();
+    var worker = new factory.StreamingWorker(
+        function () {
+            emitter.emit(&quot;close&quot;);
+        },
+        function(event, value){
+            emitter.emit(event, value);
+        }, 
+        function(error) {
+            emitter.emit(&quot;error&quot;, error);
+        }, opts);
+
+    var retval = {
+        from = emitter
+    }
+
+    retval.from.stream = function() {
+       return emitStream(retval.from).pipe(
+         through(function (data) {
+           if ( data[0] == &quot;close&quot;) this.end();
+           else this.queue(data);
+        }));
+    }
+
+    //////////////////////////////
+    // Create a to object to similate
+    // an emitter
+    retval.to = {
+      emit: function(name, data) {
+         worker.sendToAddon(name, data);   
+      }
+    return retval;
+}
+</code></pre>
+<p>The <code>to</code> object we&#39;ve added to the factory&#39;s return object isn&#39;t an actual <code>EventEmitter</code>, if you are looking to improve this you might consider adapting this code to truly create an <code>EventEmitter</code> which overrides <code>emit</code> and <code>close</code> to communicate with the addon. The implementation shown above is &quot;good enough&quot; for the purposes of these examples however.</p>
+<p>Now in our actual JavaScript program we can utilize this new <code>to</code> object:</p>
+<pre><code class="lang-javascript">&quot;use strict&quot;; 
+
+const worker = require(&quot;streaming-worker&quot;);
+const path = require(&quot;path&quot;);
+
+var addon_path = path.join(__dirname, &quot;build/Release/accumulate&quot;);
+const acc = worker(addon_path);
+
+acc.to.emit(&quot;value&quot;, 3);
+acc.to.emit(&quot;value&quot;, 16);
+acc.to.emit(&quot;value&quot;, 42);
+acc.to.emit(&quot;value&quot;, -1);
+
+acc.from.on(&#39;sum&#39;, function(value){
+    console.log(&quot;Accumulated Sum:  &quot; + value);
+});
+</code></pre>
+<p>When run, you&#39;ll get the expected answer of 61.</p>
+<h2 id="streaming-input-to-c-">Streaming input to C++</h2>
+<p>It should be clear that now that we have an <code>EventEmitter</code>-like interface, we can use <code>emit-stream</code> to turn it into a writable stream. Once again, this is a JavaScript exercise, our C++ addons don&#39;t really care whether the JavaScript uses a streaming API, they only read from the <code>fromNode</code> queue [3] . Where creating a readable stream from an event emitter for sending data to JavaScript was pretty trivial, for the opposite direction we do need to consider what happens when our input stream closes. Each addon is likely to want to be notified that the stream has closed differently (for example, the accumulator detects -1 as a sentinel but other addons could use a &#39;close&#39; message, or a different sentinel value). To allow for this flexibility, we&#39;ll bake a parameterized callback into the function we expose to create the input stream, allowing each program to decide what to do when the input stream closes. So, back into the <code>streaming-worker</code> module:</p>
+<pre><code class="lang-javascript">   ....
+
+    //////////////////////////////
+    // Create a to object to similate
+    // an emitter
+    retval.to = {
+      emit: function(name, data) {
+         worker.sendToAddon(name, data);   
+      }
+
+      stream : function(name, end) {
+         var input = through(function write(data) {
+            if (Array.isArray(data)) {
+               if ( data[0] == &quot;close&quot;){
+                  this.end();
+               }
+               else {
+                  retval.to.emit(data[0], data[1]);
+               }
+            }
+            else {
+               retval.to.emit(name, data);
+            }
+          }, end);
+        return input;
+      }
+    return retval;
+}
+</code></pre>
+<p>The <code>stream</code> function builds a <code>through</code> stream, which requires us to specify a <code>write</code> and optional <code>end</code> callback. The <code>write</code> function accepts data sent to the stream and calls the <code>emit</code> function we already created (rather than queuing it to the actual stream, which is typical). Notice that the <code>write</code> callback looks out for a <code>close</code> message and properly closes the input stream. It also handles arrays (<code>[name, value]</code>) rather than only objects (<code>{name:name, value:value}</code>);</p>
+<p>Now we can revise accumulate to use a stream as input:</p>
+<pre><code class="lang-javascript">&quot;use strict&quot;; 
+
+const worker = require(&quot;streaming-worker&quot;);
+const path = require(&quot;path&quot;);
+const streamify = require(&#39;stream-array&#39;);
+
+var addon_path = path.join(__dirname, &quot;build/Release/accumulate&quot;);
+const acc = worker(addon_path);
+
+const input = acc.to.stream(&quot;value&quot;,
+    function () {
+        acc.to.emit(&#39;value&#39;, -1);
+    });
+
+streamify([1, 2, 3, 4, 5, 6]).pipe(input);
+
+acc.from.on(&#39;sum&#39;, function(value){
+    console.log(&quot;Accumulated Sum:  &quot; + value);
+});
+</code></pre>
+<h2 id="summary">Summary</h2>
+<p>The goal of this chapter was to demonstrate how we are not locked into the basic interfaces provided by typical C++ addons. The <code>streaming-worker</code> and <code>StreamingWorker</code> models are meant as examples, there is considerable room for improvement. If you&#39;d like to use the model presented in this chapter (or extend or contribute to it), please take a look at the full repository - <a href="https://github.com/freezer333/nodecpp-demo">https://github.com/freezer333/nodecpp-demo</a>. The streaming models are in the <code>/streaming</code> directory.</p>
+<p>Now that we&#39;ve gone through so much trouble to create addons that can be plugged into Node.js applications in so many ways, we should turn our attention towards packaging and publishing them so the world can benefit... which is the subject of the next chapter!</p>
+<p>[1] To be clear, prime factorization is likely <em>not</em> a heavy enough computation task to warrant building out a complete C++ addon, let along a streaming interface. However, like most of the examples in this book, it&#39;s a simple enough problem that it doesn&#39;t require lots of explanation - yet demonstrates the programming model nicely.</p>
+<p>[2] <code>AsyncProgressWorker</code> collapses consecutive progress updates if they haven&#39;t been processed by JavaScript quickly. For example, if progress is reported at 0, 50, 100% in the worker code all before the next event loop cycle, the Node.js will only receive a single progress indicator - 100%. This makes a lot of sense from a progress report standpoint - but not for message passing!</p>
+<p>[3] As with sending data out of C++, a nice enhancement in C++ would be to create new input stream objects that extract messages from the <code>fromNode</code> queue, allowing an addon to do things like <code>fromNode &gt;&gt; msg;</code>. This is a purely C++ exercise though, and is left to the reader.</p>
+<p><a href="ch08.html">Next Chapter</a><br><a href="index.html">Table of Contents</a></p>
+</body></html>

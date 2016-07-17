@@ -1,0 +1,345 @@
+<!doctype html><html><head>
+
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/styles/default.min.css">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/highlight.min.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+  <style>
+      .markdown-body {
+          box-sizing: border-box;
+          min-width: 200px;
+          max-width: 980px;
+          margin: 0 auto;
+          padding: 45px;
+      }
+      .highlight {
+        background-color:red;
+        background-color:#f1c40f;
+        padding:1em;
+      }
+  </style>
+<title>C++ and Node.js Integration</title>
+</head><body class='markdown-body'>
+<p><a href="index.html">Table of Contents</a></p>
+<h1 id="chapter-1-introduction">Chapter 1 - Introduction</h1>
+<p>In this first chapter we&#39;re going to dive right into making a few really simple Node.js addons in C++. The examples are limited, so we don&#39;t need to tackle too much of the V8 API too soon. They really serve as a launching point into the rest of the book, as we go through them I&#39;ll point you to different chapters throughout the book where you can get more details on various topics.</p>
+<p>I assume you have a working knowledge of C++ and JavaScript - at least from a syntax perspective. If you are a JavaScript developer who has never written C++, some of this content is going to take some time to digest. If you are C++ developer, with little JavaScript experience, you likely will have it a bit easier - simply because most of our code will be C++. Nevertheless, this chapter will be important for you since it will give you some insight as to how JavaScript actually works with Node.js and the V8 engine.</p>
+<h2 id="why-build-a-c-addon-">Why build a C++ addon?</h2>
+<p>Before we start - let&#39;s answer the most obvious question... why would we want to build a C++ addon and call it from JavaScript?</p>
+<p>First off, recognize that while raw <em>speed</em> is probably the knee-jerk reaction - especially if you are C++ developer - make sure you carefully consider this. C++ certainly runs faster than JavaScript - but it doesn&#39;t outperform it as much as some people like to believe. JavaScript doesn&#39;t have a &quot;speed&quot;. The JavaScript <em>interpreter</em>, which translates the code into executable binary instructions, determines the speed - and that program is usually a web browser. Up until around 2008, execution time of JavaScript was extremely slow compared to C++ - however things have changed since then. Modern JavaScript engines (we don&#39;t like calling them <em>interpreters</em>, since they are actually compiling code and doing all sorts of optimization that we don&#39;t normally associate with that term) have achieved dramatic speed gains - and can at times achieve performance rivaling C++ for certain tasks. While at the time of this writing (2016) Node.js only runs on the V8 JavaScript engine from Chrome, other JavaScript engines such as Mozilla&#39;s SpiderMonkey and Microsoft&#39;s Chakra are pushing the speed boundaries even further on the front end and there are projects aimed at targeting them for Node.js as well. Don&#39;t jump to conclusions - before writing a C++ addon for speed, do some testing in pure JavaScript first.. you might be surprised!</p>
+<p>All that said, C++ should deliver at least a 2x runtime improvement over JavaScript for most CPU-bound tasks. This can be even more so if your algorithms can run faster by optimizing on low level architecture features (cache size, etc.) that aren&#39;t available in JavaScript. So as a first reason... yes, if you&#39;ve got a critical CPU-heavy task to complete in a Node.js application - building a C++ addon is likely a great choice[1].</p>
+<p>A second reason for writing a C++ addon - and one that I&#39;d argue is likely <em>more</em> common - is that you <em>already have some C or C++ code</em>, that you want to integrate into Node.js. Node.js is a great platform for building web applications, micro-services, and other I/O tasks - but sometimes when adopting Node.js you need to migrate over C++ code that is already important to your application or business. You don&#39;t need to rewrite it in JavaScript - you can turn it into an addon! If you are in this situation, be sure sure to review Appendix A as well as the core chapters in this book - they cover alternative ways of integrating existing C++ code.</p>
+<h2 id="what-is-a-node-js-module-">What is a Node.js Module?</h2>
+<p>So we know we want to develop some C++ code that can be added into (it&#39;s an <em>addon</em>, after all) our JavaScript code. What mechanism does JavaScript have for organizing packages? If you&#39;ve been paying attention to the JavaScript world on the front-end, you know that while standards are emerging for this, JavaScript has always been plagued by a lack of packaging mechanism. Node.js, however, already has such a mechanism built in[2].</p>
+<p>In Node.js, modules represent individual units of code. Modules have a 1:1 relationship with files - one module goes into one file. Any JavaScript file (when run in Node.js) can be a module, all it needs to do is add properties (or functions) to the <code>exports</code> property, which is implicitly defined by Node.js.</p>
+<pre><code class="lang-javascript">// hello_module.js
+exports.say_hello = function() {
+    return &quot;hello world&quot;;
+}
+</code></pre>
+<p>To import this module into another script file, we utilize the <code>require</code> method, with a relative path to the module (without a file extension).</p>
+<pre><code class="lang-javascript">// hello.js
+var hello = require(&quot;./hello_module&quot;);
+console.log(hello.say_hello());
+</code></pre>
+<p>The returned object from require <em>is</em> the <code>exports</code> object - so we can now call <code>say_hello</code> on that object.</p>
+<pre><code class="lang-bash">$ node hello.js
+hello world
+</code></pre>
+<p>One of the things that makes this import/module system all the more powerful is <code>npm</code> - the Node.js package manager. With an account on <a href="https://www.npmjs.com/">npmjs.com</a>, you can publish your own modules, and by utilizing <code>npm install</code> you can easily pull down any one of the tens of thousands of open source modules that make up the Node.js ecosystem. If you&#39;ve built Node.js apps before you&#39;ve likely installed modules using <code>npm</code> many times. We won&#39;t talk to much more about <code>npm</code> until Chapter 8 - but if you are unfamiliar with it - you might want to read up on it before you continue.</p>
+<h2 id="what-is-a-node-js-addon-">What is a Node.js Addon?</h2>
+<p>OK, so if you didn&#39;t already know how all those module&#39;s you&#39;ve been plugging into your Node.js apps were built - now you do! What you might have also observed when including modules is that some of them seem to require <code>npm</code> to do a bunch of work during the install process. A good example of this is <code>bcrypt</code>, a library for doing cryptographic hashing:</p>
+<pre><code class="lang-bash">$ npm install bcrypt
+-
+&gt; bcrypt@0.8.5 install /home/sfrees/projects/tmp/node_modules/bcrypt
+&gt; node-gyp rebuild
+&gt; 
+make: Entering directory `/home/sfrees/projects/tmp/node_modules/bcrypt/build&#39;
+  CXX(target) Release/obj.target/bcrypt_lib/src/blowfish.o
+  CXX(target) Release/obj.target/bcrypt_lib/src/bcrypt.o
+  CXX(target) Release/obj.target/bcrypt_lib/src/bcrypt_node.o
+  SOLINK_MODULE(target) Release/obj.target/bcrypt_lib.node
+  COPY Release/bcrypt_lib.node
+make: Leaving directory `/home/sfrees/projects/tmp/node_modules/bcrypt/build&#39;
+bcrypt@0.8.5 node_modules/bcrypt
+|__ bindings@1.2.1
+|__ nan@2.0.5
+</code></pre>
+<p>A quick look at that output and you&#39;ll see the tell tale signs of a <strong>Node.js</strong> native addon written in C++. The third line of the output shows us that bcrypt is issuing a <code>node-gyp rebuild</code> command, and we can see that a <code>Makefile</code> is being executed to build CXX targets. <code>bcrypt</code> is largely written in C++ .</p>
+<p>Using <code>bcrypt</code> is easy - there is no difference between using a native C++ addon and a normal JS module - you just <code>require</code> it.</p>
+<pre><code class="lang-javascript">var bcrypt = require(&#39;bcrypt&#39;);
+bcrypt.genSalt(10, function(err, salt) {
+    bcrypt.hash(&#39;B4c0/\/&#39;, salt, function(err, hash) {
+        // Store hash in your password DB.
+    });
+})
+</code></pre>
+<p>Of course, in order for <em>your own</em> addon (or JS package) to be installed and included like this, you need to package it up and publish it - which I&#39;ll show you how to do in Chapter 8.</p>
+<h2 id="node-js-and-the-v8-engine">Node.js and the V8 Engine</h2>
+<p>We know why we&#39;d like to write addons in C++, and we know there are plenty of modules out there that can be seamlessly integrated into our Node.js applications. So the next question is, how is this done? What is providing this nice bridge between these two <em>very</em> different languages? The answer, of course, is the <strong>Google V8 JavaScript library</strong> - the <em>open source</em> JavaScript execution engine that ships with the Google Chrome web browser. V8 is a <em>C++ library</em> which provides a high performance execution environment for JavaScript code. When V8 shipped as part of Chrome in 2008 it was envisioned as a library for executing JavaScript loaded in the browser, at the request of the loaded web document - but things changed in 2009 when Ryan Dahl created Node.js.</p>
+<p>Node.js has brought JavaScript server-side development into the mainstream. It is built on top of V8, but instead of being a web browser, it provides access to the underlying operating system. Before you put your security hat on, remember that we aren&#39;t talking about <em>arbitrary</em> JavaScript coming from the web - we&#39;re talking about locally developed (or at least willfully copied) code. Essentially, Node.js gives JavaScript the system API calls that languages like C, C++, Java, Python, etc. have always had.</p>
+<p>Node.js is really just glue and support code around a few key components:</p>
+<ol>
+<li>Google&#39;s V8 JavaScript engine</li>
+<li>C++ modules for low-level I/O operations (files, threads, sockets, etc.)</li>
+<li>An event-loop (much more on this later)</li>
+</ol>
+<p>Of course, that&#39;s a simplification - but the idea is that Node.js plays a similar role as the Chrome web browser does (see Figure 1). Where a web browser like Chrome (written in C++) exposes host objects like <code>window</code> and the HTML DOM to JavaScript executing within V8, Node.js exposes low-level I/O - such as the file system, network, threading, etc. This is why Node.js is perfect for <em>server</em> development - it has provided access to the OS from JavaScript.</p>
+<p><img src="imgs/chrome_node.png" alt="Node.js provides a &quot;host&quot; for JavaScript executing in the V8 Engine, just like Chrome does for the web."></p>
+<p>So now we see that the JavaScript interpreter (actually, it&#39;s more like a JIT compiler) is just a C++ library. You can actually embed V8 in your own C++ applications to execute JavaScript code contained in regular C++ strings - without Node.js. If you want to take a look - check out the examples in Google&#39;s <a href="https://developers.google.com/v8/get_started">Embedder&#39;s Guide</a>.</p>
+<p>While nice (and extremely useful in many situations), we&#39;re not really interested in using V8 directly like this. We are more interested in the fact that V8 provides a C++ API <em>into</em> the JavaScript that is executing. This API allows us to write C++ code that can be loaded by Node.js - and this C++ code becomes fully callable from your JavaScript code. Along the same lines, the API allows us to hold resources allocated by JavaScript in C++, and even call JavaScript functions from C++.</p>
+<p>Let&#39;s get started!</p>
+<h2 id="hello-world-returning-data-from-c-to-javascript">Hello World - Returning data from C++ to JavaScript</h2>
+<p>I&#39;m going to start off with a few examples that are currently on the official <a href="https://nodejs.org/api/addons.html">Nodejs.org API manual</a>. Don&#39;t worry - you weren&#39;t tricked into purchasing a book that just turns a bunch of freely available examples in to a PDF - I&#39;ll be going into far more detail in subsequent chapters. For now though, nothing beats a few &quot;hello worlds&quot; to get things going - so I&#39;m not reinventing the wheel.</p>
+<p>There are going to be three essential components to each of our initial examples - (1) a C++ file that holds our C++ addon, (2) a binding.gyp file that sets up our build, and (3) our JavaScript file that actually calls the addon. For simplicity, I&#39;m putting all three in a single directory - but more exotic layouts are frequently used (and often addons are developed without a JavaScript file that calls it). We&#39;ll defer the discussion on <code>binding.gyp</code> for a bit - let&#39;s just start out with the code.</p>
+<p>As our first example, our C++ addon will expose a single method - <code>hello</code> that returns the string <code>world</code>. We&#39;d use it from JavaScript like this, which would be in <code>hello.js</code>:</p>
+<pre><code class="lang-javascript">// hello.js
+const addon = require(&#39;&lt;path to addon&gt;&#39;);
+
+console.log(addon.hello()); // &#39;world&#39;
+</code></pre>
+<p>Note <code>&lt;path to addon&gt;</code> will get filled in later in this discussion, after we build the addon. As you can see though, our C++ addon will be callable just as easily as modules like <code>bcrypt</code> and pure JS modules are called.</p>
+<p>Now let&#39;s take a look at the C++ code, which would be stored in &#39;hello.cpp&#39;.</p>
+<pre><code class="lang-cpp">#include &lt;node.h&gt;
+
+using namespace v8;
+
+void Method(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+  Local&lt;String&gt;  retval = String::NewFromUtf8(isolate, &quot;world&quot;);
+  args.GetReturnValue().Set(retval);
+}
+
+void init(Local&lt;Object&gt; exports) {
+  NODE_SET_METHOD(exports, &quot;hello&quot;, Method);
+}
+
+NODE_MODULE(hello_addon, init)
+</code></pre>
+<p>All of the code above, and in the rest of this chapter is available in full in the <code>nodecpp-demo</code> repository at <a href="https://github.com/freezer333/nodecpp-demo">https://github.com/freezer333/nodecpp-demo</a>, under the &quot;Basics&quot; section.</p>
+<p>Before we go any further, let&#39;s get a few of the questionable data types and methods clarified. On lines 1 and 3 you see we&#39;re just including our headers and declaring the v8 namespace.</p>
+<p>Where is <code>node.h</code> you ask? Well - be patient... we&#39;ll see that we&#39;ll use a build tool specially designed to pull in Node.js dependencies in a moment. For now, just understand that by including <code>node.h</code> we&#39;ve also pulled in headers for V8 - which we&#39;ll start using now.</p>
+<h3 id="from-the-bottom-up-registering-the-module">From the bottom up - registering the module</h3>
+<p>First, let&#39;s remember that hello.cpp aims to be a Node.js module. If we look at line 15, we see <code>NODE_MODULE(addon, init)</code>. This is a C++ <code>macro</code> - it&#39;s not a function call. This macro creates code that will (when loaded by Node.js) register a module named &quot;hello_addon&quot; with the JavaScript context (V8). In addition, it will ensure that a function called <code>init</code> is called when the module is <code>require</code>d. That <code>init</code> function is on line 11, and repeated here.</p>
+<pre><code class="lang-cpp">void init(Local&lt;Object&gt; exports) {
+  NODE_SET_METHOD(exports, &quot;hello&quot;, Method);
+}
+</code></pre>
+<p>Remember that when creating a JavaScript module, your <code>js</code> file usually adds properties (objects, methods) to the <code>module.exports</code> object. The parameter of the <code>init</code> function is that very same <code>module.exports</code> object - and we are adding a method to it. The data type is <code>Local&lt;Object&gt;</code>, which means it&#39;s a JavaScript object, defined only within the scope of this function call (we&#39;ll get into this more in a moment). The call to <code>NODE_SET_METHOD</code> adds a function <code>Method</code> to the <code>exports</code> object, and makes it callable by the name <code>hello</code>.</p>
+<h3 id="the-isolate-object-local-s-and-functioncallbackinfo-">The <code>Isolate</code> object, <code>Local</code>s, and <code>FunctionCallbackInfo</code></h3>
+<p>Now we get to the definition of the actual C++ function being made callable from JavaScript - <code>Method</code>. It&#39;s a really simple function - it just returns the string &quot;world&quot; - but the method below seems to have some pretty complicated stuff in it...</p>
+<pre><code class="lang-cpp">void Method(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+  Local&lt;String&gt;  retval = String::NewFromUtf8(isolate, &quot;world&quot;);
+  args.GetReturnValue().Set(retval);
+}
+</code></pre>
+<p>As will be described in much further detail in Chapter 2, V8&#39;s core job is to manage the execution of JavaScript code - and that principally means it needs to manage all the memory that your JavaScript (Node.js) code allocates and de-allocates. The fact is, the JavaScript running in V8 (which will call this method) doesn&#39;t have direct access to &quot;memory&quot; like C or C++ does - it&#39;s memory is completely managed by V8; JavaScript variables/object occupy chunks of memory <em>within</em> V8 address space.</p>
+<p>This issue is the real reason returning &quot;world&quot; to JavaScript appears complex. Specifically, the memory that holds the character string &quot;world&quot; cannot simply be allocated like a C++ string (on <em>actual</em> main memory) - it needs to be allocated within V8&#39;s memory store which is serving JavaScript. The V8 API exposes ways of allocating these variables from C++ in a variety of ways (the details of which will talk more about in Chapter 2) - but a common theme is that we must do so through an <code>Isolate</code> object.</p>
+<p>An <code>Isolate</code> object represents the V8 instance itself. The name comes from the fact that the execution engine, when embedded in a web browser like Chrome, could be executing many JavaScript environments simultaneously - associated with web pages running in separate tabs and windows. When we have multiple pages open, each page&#39;s JavaScript instance must be <em>isolated</em> from the others - otherwise one page&#39;s script could access/modify another&#39;s global objects (like <code>window.location</code> or <code>window.document</code>)... which would be <strong>bad</strong>. V8 uses the notion of an <code>Isolate</code>, combined with a <code>Context</code>, to provide these parallel execution environments.</p>
+<p>On line 7, we see the first (of a few) ways we can obtain an instance of an <code>Isolate</code>. The parameter passed to <code>Method</code> represents the calling context of the function, from JavaScript. Among other things, it contains the current scope, parameters, and return address/site of what will be returned. It of course also knows very well which instance of V8 it was called from - so the availability of the <code>args.GetIsolate()</code> method seems reasonable.</p>
+<p>On line 8 we use the isolate when invoking a factory call on <code>v8::String</code>&#39;s static <code>NewFromUtf8</code> method. This method allocates room for &quot;world&quot; within the memory associated with the <code>isolate</code>. Exactly <em>where</em> this variable is allocated is important - and we get a clue from the data type the return value is being stored in.</p>
+<p>V8&#39;s mechanism for allowing your C++ code to create and hold variables accessible to JavaScript is the <code>Handle</code> - which comes in two general flavors - <code>Local</code> and <code>Persistent</code>. Chapter 2 will deal with this in greater detail, for now let&#39;s be content with the idea that <code>Local</code> handles manage memory scoped to the current function call. Handles are template classes, capable of holding any V8 basic data type (Value, Object, Array, Date, Number etc.).</p>
+<pre><code class="lang-cpp">void Method(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+  Local&lt;String&gt;  retval = String::NewFromUtf8(isolate, &quot;world&quot;);
+  args.GetReturnValue().Set(retval);
+}
+</code></pre>
+<p>Now that we have a variable <code>retval</code> containing &quot;world&quot;, we&#39;re ready to return it to the calling JavaScript code. Remember again though, V8 has called this function - the JavaScript only caused V8 to call this - it didn&#39;t call it itself!. All methods that V8 calls return <code>void</code> - the mechanism of setting return values is through the <code>FunctionCallbackInfo</code> class.</p>
+<p>The <code>FunctionCallbackInfor</code> class contains all the information one would need to know about how the method was invoked from JavaScript. It will contain the parameters of the call, the <code>isolate</code>, the <code>this</code> object you&#39;d normally expect to have if this were a JavaScript function, and finally... a slot to store what will be returned to JavaScript by V8. The Set method on the <code>v8::ReturnValue</code> is overloaded to accept any of the standard V8 data types.</p>
+<h2 id="building-addons-with-node-gyp-">Building Addons with <code>node-gyp</code></h2>
+<p>C++ code needs to be compiled into executable form - whether it be as an object file to be linked with others, a shared library, or a standalone executable. I assume you are somewhat familiar with building C++ on your platform/OS of choice (or all of them!) - but to build our addons we&#39;ll want to use a tool chain specifically setup for Node.js addons. One reason for this is that we need to link to the Node.js dependencies and headers correctly. Secondly, when we publish our modules (Chapter 8), we&#39;ll need a cross-platform way for <code>npm</code> to build our C++ source into binary for the target platform.</p>
+<p>At time of this writing (2016), <code>node-gyp</code> is the de-facto standard build tool for writing Node.js addons. It&#39;s based on Google&#39;s <code>gyp</code> build tool, which abstracts away many of the tedious issues related to cross platform building. While <code>gyp</code> has little to do with Node.js, <code>node-gyp</code> makes creating addons a relative breeze by setting up dependencies and target formats (addons will be binary files with a <code>.node</code> extension) for us automatically.</p>
+<h3 id="pre-requisites-for-building">Pre-requisites for building</h3>
+<p>While <code>node-gyp</code> handles orchestrating builds, we still need to have an appropriate C++ tool chain installed on our machine to build (or install, by the way!) our addon. Before moving forward, you&#39;ll need to make sure you have the following:</p>
+<ol>
+<li>Python 2.7+, but <strong>not Python 3.x</strong>. <code>node-gyp</code> uses Python for part of it&#39;s build process, but it is not compatible with Python 3 - you must have a 2x version installed on your machine. They can be installed side-by-side, so if you want Python3 too - it&#39;s not a problem.</li>
+<li>Build tools for your platform - if you are on Linux/Mac OX you&#39;ll need <code>make</code> and <code>clang++</code>. On OS X, these are installed when you install XCode. On Windows, you need Visual Studio installed on your system.</li>
+</ol>
+<p>Once you have those setup (and on your path), you can install <code>node-gyp</code> using <code>npm</code>. Be sure to install it globally!</p>
+<pre><code class="lang-bash">$ npm install node-gyp -g
+</code></pre>
+<h3 id="configuring-the-build">Configuring the build</h3>
+<p>We configure the build process by creating a <code>binding.gyp</code> file in the same directory as our <code>hello.cpp</code> file. This binding file&#39;s primary purpose is to tell <code>node-gyp</code> which source code files to build, and what to name the output.</p>
+<pre><code class="lang-javascript">{
+  &quot;targets&quot;: [
+    {
+      &quot;target_name&quot;: &quot;hello_addon&quot;,
+      &quot;sources&quot;: [ &quot;hello.cpp&quot; ]
+    }
+  ]
+}
+</code></pre>
+<p>The <code>sources</code> array is self explanatory - however one important thing to note is that the <code>target_name</code> is <strong>not arbitrary</strong>, it must specifically match up with what you named your module on line 15 of the addon - the <code>NODE_MODULE(hello_addon, init)</code> call. You&#39;ve been warned.</p>
+<p>Now it&#39;s time to build. Within the directory of your <code>hello.cpp</code> and <code>binding.gyp</code> file, issue the configure and build command:</p>
+<pre><code class="lang-bash">$ node-gyp configure build
+</code></pre>
+<p>As long as you don&#39;t have any syntax errors in your C++ source code, this command will successfully produce build files (<code>Makefile</code> or Visual Studio project files) and build the <code>hello_addon.node</code> file. It will be located in <code>build/Release</code>.</p>
+<p>There&#39;s a lot more we can do with <code>node-gyp</code>. Many of the examples to follow will add compiler options to enable C++11 and C++14 features, and we&#39;ll push further with it still in Chapter 8 and Appendix A, where we&#39;ll see how we can build standalone applications and shared libraries with <code>node-gyp</code> as well.</p>
+<p>But for now... let&#39;s run our JavaScript and call our Addon!</p>
+<h2 id="calling-your-addon-from-javascript">Calling your Addon from JavaScript</h2>
+<p>At this point, your directory structure should be something like this (I&#39;ve left out a bunch of files <code>node-gyp</code> creates along the way):</p>
+<pre><code>/project_root
+  |__ .
+  |__ ..
+  |__ build
+  |     |__ Release
+  |           |__ hello_addon.node
+  |__ hello.cpp
+</code></pre><p>At the project&#39;s root directory, right next to <code>hello.cpp</code>, create a new JavaScript file called <code>hello.js</code>. This file will call our addon by first <code>require</code>-ing it using <em>relative path</em> syntax (see Chapter 8 for actually publishing addons and then being able to require them like normal modules).</p>
+<pre><code class="lang-javascript">// hello.js
+const addon = require(&#39;./build/Release/hello_addon&#39;);
+
+console.log(addon.hello()); // &#39;world&#39;
+</code></pre>
+<p>Remember that we attached <code>Method</code> (line 5 in <code>hello.cpp</code>) to the module&#39;s <code>exports</code> object when we called <code>NODE_SET_METHOD(exports, &quot;hello&quot;, Method)</code> on line 12 - but we called it <code>hello</code> (the second parameter). Thus, holding the <code>addon</code> object (the <code>exports</code> object) returned from require, we can simply call the <code>hello</code> function to invoke our C++ code.</p>
+<pre><code class="lang-bash">$ node hello.js
+world
+</code></pre>
+<h2 id="passing-parameters-from-javascript-to-c-">Passing Parameters from JavaScript to C++</h2>
+<p>In the first &quot;hello world&quot; example we simply returned a string to the calling JavaScript. The return value was set by accessing the <code>FunctionCallbackInfo</code> data structure V8 hands us when our addon&#39;s method (<code>Method</code>) is called. It likely comes as no surprise that this <code>args</code> object is also where we&#39;ll get the parameters/arguments our addon&#39;s method is called with from.</p>
+<p>Let&#39;s turn our attention to our next example, where we build a C++ addon that adds two numbers and returns the sum. We&#39;d call the addon from JavaScript like this:</p>
+<pre><code class="lang-javascript">const cmath = require(&#39;./build/Release/cmath&#39;);
+const five = cmath.add(2, 3);
+console.log( &#39;2 + 3 is &#39;, five );
+</code></pre>
+<p>Let&#39;s create this example in a folder called <code>cmath</code>, and start with <code>cmath.cpp</code>. Defining the addon&#39;s entry point and initialization code is virtually identical to that of our first &quot;hello world&quot; example - which becomes a bit of a recurring theme!</p>
+<pre><code class="lang-cpp">#include &lt;node.h&gt;
+using namespace v8;
+
+// Called when addon is require&#39;d from JS
+void Init(Local&lt;Object&gt; exports) {
+    NODE_SET_METHOD(exports, &quot;add&quot;, Add);  // we&#39;ll create Add in a moment...
+}
+
+// The addon&#39;s name is cmath, this tells V8 what to call when it&#39;s require&#39;d
+NODE_MODULE(cmath, Init)
+</code></pre>
+<p>The code above is pretty much &quot;boilerplate&quot; code to bootstrap an addon - we&#39;ve invoked the <code>NODE_MODULE</code> macro to tell V8 that when someone loads an addon called <code>cmath</code> our <code>Init</code> function should be called. Our <code>Init</code> function registers a single method on the <code>exports</code> object (as we&#39;ll see, we can register many if we wish). Now let&#39;s look at the <code>Add</code> method itself:</p>
+<pre><code class="lang-cpp">void Add(const FunctionCallbackInfo&lt;Value&gt; &amp; args) {
+    Isolate * isolate = args.GetIsolate();
+
+    // value is created on the C++ runtime stack, not as part of 
+    // the JavaScript execution context...
+    double value= args[0]-&gt;NumberValue() + args[1]-&gt;NumberValue();
+
+    // Now we create it in the JS execution context so we can return it
+    Local&lt;Number&gt; num = Number::New(isolate, value);
+    args.GetReturnValue().Set(num);
+}
+</code></pre>
+<p>Line 2 gets a reference to our now familiar <code>Isolate</code> - which represents the execution context the calling JavaScript is running within. Line 6 is where we extract the arguments from the <code>args</code> object. It&#39;s also our first run-in with one of the various ways we can cast V8 <code>Value</code> types. The <code>args</code> object overloads the <code>[]</code> operator and returns <code>Local&lt;Value&gt;</code> objects corresponding to the parameters the method was called with. <code>Local&lt;Value&gt;</code> is a wrapper around a <code>Value</code> object - locally bound to the current JS function invocation.</p>
+<p>As Chapter 2 will discuss, <code>V8::Value</code> acts as a base type for the data types V8 provides to map against JavaScript data types. For the C++ developers reading this - <code>V8::Value</code> sits at (close to) the top of an inheritance hierarchy which includes <code>Object</code>, <code>Array</code>, <code>Date</code>, <code>Function</code>, JS primitives like <code>Boolean</code>, <code>Number</code>, <code>String</code>, and many more. In JavaScript, there is little distinction between integers and float/doubles in the basic language, and thus the <code>Number</code> type - which holds floats. Incidentally, in V8, we can also use <code>Integer</code> types if we wish - they are subclasses of <code>Number</code>. Chapters 2 and 3 will also get into using <code>Object</code>s and <code>Array</code>s in increasing detail.</p>
+<p><img src="imgs/value_inheritance_simple.png" alt="Simplified inheritance hierarchy for V8 data types."></p>
+<p><code>Value</code> objects can can hold data corresponding to any of their subclasses. Assuming you know their underlying data type, you may use a corresponding accessor to retrieve the value. So, for example, if we know arguments 0 and 1 are numbers, we can call <code>NumberValue</code> on them to return a pure C++ double value representing the parameter. If we wanted to simply cast the <code>Value</code> to the V8 representation (and thus, work directly with the data held in the V8 execution context as a <code>Local</code>), we could call <code>ToNumber</code> instead - which returns <code>Local&lt;Number&gt;</code>.</p>
+<p>Line 6 adds the pure C++ primitives retrieved by calling <code>NumberValue</code> and stores it in a plain-old C++ primitive. Importantly, this variable is just a normal stack variable in C++ - we can&#39;t return it to JavaScript. To allocate this data in the V8 execution context, we wrap it in a new <code>Local&lt;Number&gt;</code> object using a static <code>New</code> method defined on the <code>Number</code> data type. This call (line 9) accepts the <code>isolate</code> and allocates / assigns the value in the V8 runtime. Finally, we can return the value the same way we returned our &quot;hello world&quot; string - as shown on line 10.</p>
+<h3 id="inspecting-the-arguments-before-using-them">Inspecting the arguments before using them</h3>
+<p>If directly calling <code>NumberValue</code> on <code>args[0]</code> and <code>args[1]</code> causes you some pause... it should! Unlike C++, JavaScript doesn&#39;t force callers to use the &quot;correct&quot; number of parameters when calling a function. Even though we&#39;d like our <code>Add</code> function to accept two numeric parameters - we don&#39;t have any way of ensuring this. The following calls to <code>add</code> from JavaScript are all perfectly legitimate (even though they might not make sense):</p>
+<pre><code class="lang-javascript">const cmath = require(&#39;./build/Release/cmath&#39;);
+
+var x = cmath.add();
+var y = cmath.add(5);
+var z = cmath.add(5, &quot;Confused&quot;);
+</code></pre>
+<p>Knowing this, we&#39;d be a bit foolish to simply assume (1) that the caller has provided us both <code>args[0]</code> and <code>args[1]</code>, and that (2) they are both numeric values! Thankfully, the V8 API provides us with some easy ways to inspect our <code>args</code> object before blissfully extracting our numbers. Let&#39;s revise our <code>Add</code> method to first check that there are the correct number of arguments:</p>
+<pre><code class="lang-cpp">void Add(const FunctionCallbackInfo&lt;Value&gt; &amp; args) {
+    Isolate * isolate = args.GetIsolate();
+
+    if (args.Length() &lt; 2) {
+        return;
+    }
+
+    // value is created on the C++ runtime stack, not as part of 
+    // the JavaScript execution context...
+    double value= args[0]-&gt;NumberValue() + args[1]-&gt;NumberValue();
+
+    // Now we create it in the JS execution context so we can return it
+    Local&lt;Number&gt; num = Number::New(isolate, value);
+    args.GetReturnValue().Set(num);
+}
+</code></pre>
+<p>One line 5, we simply return if the caller did not specify enough arguments. <strong>The actual result of our call will show up as <code>undefined</code> in JavaScript</strong> - since we never called <code>args.GetReturnValue().Set(...)</code>. If you instead want to really punish the caller for using your addon incorrectly, you can throw an exception - the choice is yours (and probably depends on the usage of your addon):</p>
+<pre><code class="lang-cpp">// alternative to returning undefined
+if (args.Length() &lt; 2) {
+    // Throw an Error that is passed back to JavaScript
+    isolate-&gt;ThrowException(Exception::TypeError(
+        String::NewFromUtf8(isolate, &quot;Wrong number of arguments&quot;)));
+    return;
+}
+</code></pre>
+<p>It&#39;s not enough to know there were two arguments though, we also need to ensure both arguments were numbers. As shown above, the <code>Value</code> object has accessor functions to return <code>Local</code> handles that wrap the underlying subclass (i.e. <code>ToNumber</code>) as well as accessors to return the corresponding C++ primitive (i.e. <code>NumberValue</code>). <code>Value</code> also has query methods to determine if the data belongs to a corresponding subclass. We can inspect each argument to see if it&#39;s actually a number as follows:</p>
+<pre><code class="lang-cpp">if (!args[0]-&gt;IsNumber() || !args[1]-&gt;IsNumber()) {
+    return; // undefined goes back to the caller
+}
+</code></pre>
+<p>Similar query methods exist for all subclasses of <code>Value</code>. Similarly, we could opt to throw an exception in this case as well.</p>
+<h2 id="calling-javascript-functions-from-c-">Calling JavaScript functions from C++</h2>
+<p>As a last &quot;tease&quot; for the remainder of the book, the introduction wouldn&#39;t be complete without dealing with the ever-present JavaScript &quot;callback&quot;. A callback is nothing more than a function that you pass to some other part of your code, with the expectation that the recipient code will &quot;call&quot; the function later... essentially &quot;calling you back&quot;. Callbacks exist in virtually every language (although more directly in <em>functional languages</em>) - but in JavaScript (or more specifically, Node.js), they play a very large role in development.</p>
+<p>In order for C++ to call a JavaScript function (callback), the callback must be passed into the C++ module. Since functions are just normal data in JavaScript, the V8 API defines a <code>Function</code> subclass of <code>Value</code>. This subclass can be used in a similar way to the <code>Number</code> subclass we saw in the previous example. In this current example, we&#39;ll build a simple addon that instead of <em>returning</em> data, sends a result back to JavaScript by calling the <em>callback</em> it is provided.</p>
+<p>Here&#39;s what the calling JavaScript might look like:</p>
+<pre><code class="lang-javascript">const callback = require(&#39;./build/Release/callback&#39;);
+
+var callme = function() {
+    console.log(&quot;I&#39;ve been called!&quot;);
+}
+
+callback.callthis(callme);
+</code></pre>
+<p>When executed, we&#39;ll see &quot;I&#39;ve been called!&quot; print out, because our C++ calls the function itself. I&#39;ll leave out the <code>NODE_MODULE</code> and <code>Init</code> boilerplate, as it&#39;s basically the same as the previous examples:</p>
+<pre><code class="lang-cpp">void CallThis(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+  Local&lt;Function&gt; cb = Local&lt;Function&gt;::Cast(args[0]);
+  cb-&gt;Call(Null(isolate), 0, nullptr);
+  return;  // undefined returned to JavaScript
+}
+</code></pre>
+<p>On line 2 we get a reference to the V8 execution context - <code>isolate</code>. Line 3 casts <code>arg[0]</code> (a <code>Local&lt;Value&gt;</code>) to a function object - <code>cb</code>. In a bit of a V8 quirk, the API is a little inconsistent here. Instead of calling something like <code>ToNumber</code> as we would to convert the <code>Local&lt;Value&gt;</code> to a <code>Local&lt;Number&gt;</code>, we must use the casting syntax here. There is good reason for this (involving type coercion), but let&#39;s defer that to Chapter 2 where we&#39;ll dive into the data types further.</p>
+<p>Line 4 is where we invoke the callback - using the <code>Call</code> method. <code>Call</code> accepts three parameters:</p>
+<ol>
+<li>Receiver - which is the JavaScript object that <code>this</code> will be bound to when this JavaScript callback is invoked. We are setting this to <code>null</code>, which will just set <code>this</code> to whatever the default is within the JavaScript code.</li>
+<li>Number of Arguments - zero in this case, but would correspond to the number of parameters we will pass to the callback when it is executed.</li>
+<li>Arguments - <code>null</code> here because we aren&#39;t passing any arguments - otherwise we&#39;d be passing in an array of <code>Local&lt;Value&gt;</code> objects.</li>
+</ol>
+<p>On execution, we&#39;ll call whatever function was passed into <code>CallThis</code>&#39;s first parameter.</p>
+<h3 id="calling-callbacks-with-parameters">Calling callbacks with parameters</h3>
+<p>A slight variation on the example above would actually make use of the ability to call function callbacks with parameters. Let&#39;s write an addon that could be used like this:</p>
+<pre><code class="lang-javascript">const callback = require(&#39;./build/Release/callback&#39;);
+
+var callme = function(message) {
+    if ( message ) {
+        console.log(message);
+    }
+    else {
+        console.log(&quot;I&#39;ve been called!&quot;);
+    }
+}
+
+callback.callthis(callme);  
+callback.callthis_withthis(callme, &quot;This is an important message&quot;);
+</code></pre>
+<p>The first thing you should notice is that there are two methods being exported by the <code>callback</code> addon from the last example. Your addons can export any number of methods - you just need to make additional calls to <code>NODE_SET_METHOD</code> within your <code>Init</code> function.</p>
+<pre><code class="lang-cpp">void Init(Local&lt;Object&gt; exports, Local&lt;Object&gt; module) {
+  NODE_SET_METHOD(exports, &quot;callthis&quot;, CallThis); 
+  NODE_SET_METHOD(exports, &quot;callthis_withthis&quot;, CallThisWithThis); 
+}
+</code></pre>
+<p>Here&#39;s the implementation of <code>CallThisWithThis</code> - which simply passes <code>arg[1]</code> through to the callback function defined in <code>arg[0]</code>.</p>
+<pre><code class="lang-cpp">void CallThisWithThis(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+  Local&lt;Function&gt; cb = Local&lt;Function&gt;::Cast(args[0]);
+
+  // Create an array with only the argument passed in (the message)
+  Local&lt;Value&gt; argv[1] = {args[1]};
+  cb-&gt;Call(Null(isolate), 1, argv);
+}
+</code></pre>
+<p>Of course, we could consolidate this into a single C++ function by checking the number of parameters passed in instead - but I&#39;ll leave that as an exercise for the reader.</p>
+<p>It is extremely important to note that the callback examples we&#39;ve just seen execute callbacks <strong>synchronously</strong>, meaning that when we call <code>callthis</code> from JavaScript, <code>callthis</code> does not actually return until <em>after</em> the C++ invokes the callback and the callback returns. This is most definitely <em>not</em> the way we expect callbacks to work in Node.js typically! Chapter 4 and 7 will deal with this topic in more detail.</p>
+<h2 id="take-aways-and-what-s-coming-next-">Take-aways and what&#39;s coming next...</h2>
+<p>Hopefully this chapter has wet your appetite for learning how to write C++ addons for the Node.js platform. We&#39;ve seen some really basic examples, but the concepts introduced will be leveraged again and again throughout this book. This chapter also serves as a bit of an outline for the rest of the text - in the next chapter we will look at the the V8 data types in much more details, and then in Chapter 3 we&#39;ll put that knowledge to use by seeing practical ways to work with Arrays and Objects. In Chapter 5 we&#39;ll see how we can wrap C++ objects so they can be used directly from JavaScript. By the time we work through all those details, you&#39;ll have a very clear picture of just how complex the V8 API can get, and we&#39;ll use <code>NAN</code> in Chapter 6 to simplify some things. Chapters 7 will then look more closely at function callbacks, specifically focusing on <em>asynchronous</em> callbacks and streaming patterns. In Chapter 8, we&#39;ll conclude by learning how to publish our native addons - which will bring the details on <code>npm</code>, <code>node-gyp</code>, and the build system into more focus.</p>
+<p>[1] There is another reason using C++ may not directly lead to performance increases - and that is the cost of data copying. Chapter 2 will describe exactly why we must always copy data out of V8 before utilizing it fully, and this will be extended in Chapter 4 when we look as asynchronous addons especially. Typically our addon needs to be <em>long running</em> before it&#39;s runtime performance begins to outweigh the cost of copying memory.</p>
+<p>[2] The module/require pattern Node.js uses is actually a partial implementation of the <a href="http://requirejs.org/docs/commonjs.html">CommonJS</a> module pattern. EMCAScript6 has standardized a similar strategy as well. For the purposes of this book, since we are not dealing with &quot;front-end&quot; JavaScript, we&#39;ll pretend the Node.js way is the only way.</p>
+<p><a href="ch02.html">Next Chapter</a><br><a href="index.html">Table of Contents</a></p>
+</body></html>

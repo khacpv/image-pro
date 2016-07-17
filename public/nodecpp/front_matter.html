@@ -1,0 +1,47 @@
+<!doctype html><html><head>
+
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/styles/default.min.css">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/highlight.min.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+  <style>
+      .markdown-body {
+          box-sizing: border-box;
+          min-width: 200px;
+          max-width: 980px;
+          margin: 0 auto;
+          padding: 45px;
+      }
+      .highlight {
+        background-color:red;
+        background-color:#f1c40f;
+        padding:1em;
+      }
+  </style>
+<title>C++ and Node.js Integration</title>
+</head><body class='markdown-body'>
+<p><a href="index.html">Table of Contents</a></p>
+<h1 id="about-this-book">About this book</h1>
+<p>I began programing in C++ as a student, almost 20 years ago and I haven&#39;t stopped using it both professionally and as a professor ever since. Most of my professional work involves web development however - and after doing many projects in many different languages and frameworks, no platform has made me more happy than Node.js. In 2014, while working on a project to integrate a legacy C++ tool (genomic sequence alignment) with a new web app, I stumbled upon C++ addons for Node.js. The chance to integrate two languages that I enjoy working with was exciting, so I began to teach myself how to write addons from resources online.</p>
+<p><em>It was painful!</em></p>
+<p>Not long after I put together my first few addons, I decided to write this book. Over the course of about a year and a half, I&#39;ve written dozens of addons, researched the way V8 and Node.js work, I read pretty much every SO and blog post on the internet dealing with the topic. This book is my effort to synthesis all that I&#39;ve learned into a complete handbook - to save you the trouble I went through getting up to speed.</p>
+<p>This book is <em>not</em> a reference manual. You won&#39;t find exhaustive API listings here, the book is written around examples - focusing on <em>concepts</em> - not facts that you can find in API docs. I want this to be a <em>practical guide</em> for creating addons - I hope you find it helpful. As you read the book, you&#39;ll no doubt want to keep V8 and Node.js documentation handy, as they are indispensable.</p>
+<p>This book contains a <em>lot</em> of source code listings. In order to make things look ok for a variety of ebook formats, I&#39;ve severely limited the number of columns I use for code - which at times makes things look a bit strange. I highly recommend that you visit my github repository, <code>nodecpp-demo</code>, which contains nearly all the code presented in this book. In each chapter, I&#39;ve referred you to the specific directories within that demo repository where you can find the code being discussed in the text.</p>
+<p>You can grab the source code at <a href="https://github.com/freezer333/nodecpp-demo">https://github.com/freezer333/nodecpp-demo</a>.</p>
+<h1 id="who-is-this-book-for-">Who is this book for?</h1>
+<p>This book is for anyone wanting to start out with or learn a bit more about Node.js C++ addons. Although nowhere in the book do I go out of my way to use advanced features of C++ or JavaScript, I do expect the reader to be fairly well familiar with these languages. Towards the middle of the book (Chapter 4), the book takes a more technical turn - dealing with issues such as threading and shared memory. I try to explain these topics a bit, however generally speaking the reader should already have a bit of multi-threaded programming experience before trying to absorb those examples. While I&#39;ve used some new(ish) C++ features in my addons, most anyone with a moderate level of C++ experience should have little problem digesting the code.</p>
+<p>This book is <em>not</em> for someone trying to learn Node.js, nor is it for someone whose never programmed in C++. While all the source code is freely available at the book&#39;s github repository, please keep in mind that I&#39;ve creating the examples for educational purposes - I&#39;m quite positive there are ways to optimize the code or make the code more &quot;production ready&quot;, but when in doubt I&#39;ve opted for simplicity. Further along those lines, while using C++ for really heavy lifting sometimes gives you a performance boost over pure JavaScript - none of the examples shown in this book are likely to be justified by a performance increase. They are specifically designed to be simple demonstrations to teach you how to integrate the two languages.</p>
+<p>Node.js has many versions, at the time of this writing version 6.0 is readying for release. I&#39;ve geared most examples and discussion for Node.js versions 0.12 and above, and all examples have been tested on Node.js v5 and below.</p>
+<p>Regarding versions, and creating &quot;production ready&quot; code - I&#39;d be remiss if I didn&#39;t explain my choice of introducing NAN, an abstraction library that shields developers from version changes, so late in the book (Chapter 6). My goal for this book is to <em>educate the concepts</em> of addon development, and I found that by learning the basic V8-level API first (which I did, somewhat accidentally), one is better able to understand NAN and it&#39;s higher level abstractions. As you progress through the book, you&#39;ll see that the more advanced concepts (progress async workers, streaming) are discussed <em>after</em> NAN, so we can use the simplifications it provides. My advice to anyone learning addons is to learn the &quot;V8 way&quot; first, but to write final production code using NAN.</p>
+<h1 id="about-the-author">About the author</h1>
+<p>Scott Frees is a Professor of Computer Science at Ramapo College of New Jersey. His research background is in immersive virtual environments, user interface design, and more recently bioinformatics and web applications. He teaches introductory programming courses in C++ and Data Structures, along with upper level courses in Web Development, Computer Graphics, Operating Systems, and Database Systems at Ramapo College.</p>
+<p>In addition to his post at Ramapo College, Scott is an active professional software consultant- with over 11 years of experience working as an application developer. Scott worked as a systems developer and consultant in the oil and gas industry for eight years, which included developing thermodynamic simulations used by General Electric and helping the National Institute of Standards and Technology create B2B electronic data exchange standards for capital facilities. He has developed custom desktop applications and web server back-ends for clients using C++, C#/ASP.NET MVC, Java, PHP, and Node.js.</p>
+<p>You can see more about Scott&#39;s work at Ramapo at his college web page: <a href="http://pages.ramapo.edu/~sfrees">http://pages.ramapo.edu/~sfrees</a></p>
+<p>More information about his professional work can be found at: <a href="https://scottfrees.com">https://scottfrees.com</a></p>
+<h1 id="acknowledgments">Acknowledgments</h1>
+<p>I&#39;d like to first thank the hundreds of fellow developers who have make their code, their questions, and their blog articles freely available online - without their willingness to put the information out there I can&#39;t imagine I would have been able to learn this subject or write this book.</p>
+<p>I&#39;d like to thank all the people who signed up for updates about the development of this book at my <a href="http://scottfrees.com">website</a>. The steady stream of signups, blog post feedback, and just general engagement gave me the motivation I needed to finish this book.</p>
+<p>I&#39;d of course also like to thank my family - my wife Sarah and my daughter Abigail - for putting up with me working on yet another project!</p>
+<p><a href="ch01.html">Chapter 1</a><br><a href="index.html">Table of Contents</a></p>
+</body></html>

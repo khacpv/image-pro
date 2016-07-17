@@ -1,0 +1,622 @@
+<!doctype html><html><head>
+
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/styles/default.min.css">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/highlight.min.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+  <style>
+      .markdown-body {
+          box-sizing: border-box;
+          min-width: 200px;
+          max-width: 980px;
+          margin: 0 auto;
+          padding: 45px;
+      }
+      .highlight {
+        background-color:red;
+        background-color:#f1c40f;
+        padding:1em;
+      }
+  </style>
+<title>C++ and Node.js Integration</title>
+</head><body class='markdown-body'>
+<p><a href="index.html">Table of Contents</a></p>
+<h1 id="chapter-4-asynchronous-addons">Chapter 4 - Asynchronous Addons</h1>
+<p>In Chapter 3 we built up a real-world example of a functioning C++ addon - however there is something a bit unsatisfying about it. If you&#39;ve programmed with Node.js (or even client-side JavaScript), you know that often functions don&#39;t <em>return</em> results - they call a <em>callback</em> when they have completed, passing the results in as parameters.</p>
+<p>Instead of using Chapter 3&#39;s rainfall addon like this:</p>
+<pre><code class="lang-javascript">var results = rainfall.calculate_results(locations);
+
+results.forEach(function(result){
+    // .. print the result
+});
+</code></pre>
+<p>... the experienced JavaScript developer might instead expect to use it like this:</p>
+<pre><code class="lang-javascript">rainfall.calculate_results(locations, function(results){
+  results.forEach(function(result){
+    // .. print the result
+  });
+});
+</code></pre>
+<p>Why muddy things up with callbacks? The answer is both simple and complicated. The simple answer is that they allow us to implement a function <em>asynchronously</em>. Behind the scenes, what this really means is that functions that accept callbacks often create worker threads to do their computation. Once the worker threads are started, the function returns and allows the calling code to go about it&#39;s business (executing the next line of code). When the worker threads complete, the callback is invoked. It&#39;s a complex work flow that often confuses new developers and has given rise to all sorts of alternative ways of working with callbacks - such as promises.</p>
+<p>Why are these functions asynchronous? Client side, within the web browser, there is clear need to avoid having JavaScript tying up a lot of time (either waiting for I/O or using the CPU), since while JavaScript is executing the browser cannot render or react to user input. In Node.js, the same philosophy holds - the event loop (implemented by a library called <code>libuv</code>) should never stall on I/O or heavy CPU because, in theory, there is likely other work to be done instead. For example, if using Node.js to implement a web server, tying up the event loop would preclude the web server from serving additional incoming web requests.</p>
+<p>Addons are no different in this regard - and in fact they are almost always strong candidates for being implemented asynchronously. Remember, one of the reasons you typically use a C++ addon is to perform a long running CPU task - where C++ will outperform JavaScript. By definition, these long CPU tasks are exactly the sort of thing that should be executed in a background thread!</p>
+<p>We are going to &quot;creep up&quot; on the asynchronous model by first learning about the V8 Function API and seeing how we can modify our rainfall addon to use callback functions (synchronously) first. We&#39;ll then move to the asynchronous model, while investigating how V8 deals with worker threads and memory management in more detail.</p>
+<p>All of the code for this chapter is available in full in the <code>nodecpp-demo</code> repository at <a href="https://github.com/freezer333/nodecpp-demo">https://github.com/freezer333/nodecpp-demo</a>, under the &quot;Rainfall&quot; section.</p>
+<h2 id="v8-function-api">V8 Function API</h2>
+<p>Chapter 2 described how to use the most common JavaScript data types through the V8 API. We covered primitives and objects in detail - but we didn&#39;t go much beyond standard objects and arrays. In JavaScript, functions are objects too - and V8 has a specific <code>Function</code> type that let&#39;s us access (and call) JavaScript functions from C++.</p>
+<p>The API for calling JavaScript functions from addons was outlined in Chapter 1, and in fact there really isn&#39;t much too it! Lets review it quickly, starting with a simple addon function that accepts two arguments - a function from JS and an argument to invoke that function (callback) with:</p>
+<pre><code class="lang-cpp">void CallThisWithThis(
+  const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+
+  Isolate* isolate = args.GetIsolate();
+  Local&lt;Function&gt; cb = Local&lt;Function&gt;::Cast(args[0]);
+
+  // Create an array with only the message passed in
+  Local&lt;Value&gt; argv[1] = {args[1]};
+  cb-&gt;Call(Null(isolate), 1, argv);
+}
+
+void Init(Local&lt;Object&gt; exports, Local&lt;Object&gt; module) {
+  NODE_SET_METHOD(exports, 
+      &quot;callthis_withthis&quot;, CallThisWithThis); 
+}
+</code></pre>
+<p>As you can see, a <code>Local&lt;Function&gt;</code> object can be cast from arguments just like any of the other data types we&#39;ve seen. To execute a function we can utilize the <code>Call</code> method. It requires three arguments - the first is the &quot;this&quot; object that the JavaScript function will be called with. Specifying null tells V8 to use the default value (depends on invocation context). The second and third parameters are for arguments the function will be called with - in this case just one argument, which is what was passed into the addon itself.</p>
+<p>The JavaScript to use the addon is pretty straightforward:</p>
+<pre><code class="lang-javascript">const callback = require(&#39;./build/Release/callback&#39;);
+
+var callme = function(message) {
+    console.log(message);
+}
+back.callthis_withthis(callme, &quot;This is an important message&quot;);
+</code></pre>
+<h2 id="synchronous-addons-with-a-callback">Synchronous addons with a Callback</h2>
+<p>Now let&#39;s adopt this style in our rainfall addon. We&#39;ll call this function <code>CalculateResultsSync</code> because while it uses callbacks, it is very much <em>synchronous</em>.</p>
+<pre><code class="lang-cpp">// in node_rainfall.cc
+void CalculateResultsSync(
+  const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp;args) {
+
+    Isolate* isolate = args.GetIsolate();
+    std::vector&lt;location&gt; locations;
+    std::vector&lt;rain_result&gt; results;
+
+    // extract each location (its a list)
+    Local&lt;Array&gt; input = Local&lt;Array&gt;::Cast(args[0]);
+    unsigned int num_locations = input-&gt;Length();
+    for (unsigned int i = 0; i &lt; num_locations; i++) {
+      locations.push_back(unpack_location(isolate, 
+          Local&lt;Object&gt;::Cast(input-&gt;Get(i))));
+    }
+
+    // Build vector of rain_results
+    results.resize(locations.size());
+    std::transform(locations.begin(), 
+      locations.end(), 
+      results.begin(), 
+      calc_rain_stats);
+
+    // Convert the rain_results into Objects for return
+    Local&lt;Array&gt; result_list = Array::New(isolate);
+    for (unsigned int i = 0; i &lt; results.size(); i++ ) {
+      Local&lt;Object&gt; result = Object::New(isolate);
+      pack_rain_result(isolate, result, results[i]);
+      result_list-&gt;Set(i, result);
+    }
+
+    Local&lt;Function&gt; callback = Local&lt;Function&gt;::Cast(args[1]);
+    Handle&lt;Value&gt; argv[] = { result_list };
+    callback-&gt;Call(
+      isolate-&gt;GetCurrentContext()-&gt;Global(), 1, argv);
+
+    std::cerr &lt;&lt; &quot;Returning from C++ now&quot; &lt;&lt; std::endl;
+
+    args.GetReturnValue().Set(Undefined(isolate));
+}
+
+...
+
+void init(Handle &lt;Object&gt; exports, Handle&lt;Object&gt; module) {
+  ...
+   NODE_SET_METHOD(exports, 
+       &quot;calculate_results_async&quot;, CalculateResultsAsync); 
+}
+</code></pre>
+<p>What do we mean by &quot;synchronous&quot;? On line 31 we invoke the callback sent in from JavaScript.</p>
+<pre><code class="lang-javascript">var print_rain_results = function(results) {
+  results.forEach(function(result, i){
+      console.log(&quot;Result for Location &quot; + i);
+      console.log(&quot;--------------------------&quot;);
+      console.log(&quot;\tLatitude:         &quot; 
+          + locations[i].latitude.toFixed(2));
+      console.log(&quot;\tLongitude:        &quot; 
+          + locations[i].longitude.toFixed(2));
+      console.log(&quot;\tMean Rainfall:    &quot; 
+          + result.mean.toFixed(2) + &quot;cm&quot;);
+      console.log(&quot;\tMedian Rainfall:  &quot; 
+          + result.median.toFixed(2) + &quot;cm&quot;);
+      console.log(&quot;\tStandard Dev.:    &quot; 
+          + result.standard_deviation.toFixed(2) + &quot;cm&quot;);
+      console.log(&quot;\tNumber Samples:   &quot; 
+          + result.n + &quot;\n&quot;);
+  });
+}
+
+// Execute the synchronous callback.
+rainfall.calculate_results_sync(locations, print_rain_results);
+
+console.log(&quot;JavaScript program has completed.&quot;)
+</code></pre>
+<p>Notice the <code>cerr</code> output afterwards - when will it execute? It executes AFTER the JavaScript function we are calling completes. The steps are like so:</p>
+<ol>
+<li>JavaScript calls our addon (<code>calculate_results_sync</code>)</li>
+<li>C++ code unpacks samples, calculates statistics</li>
+<li>C++ invokes <code>print_rain_results</code></li>
+<li>JavaScript prints the rains results to the screen</li>
+<li>Control returns to C++ addon, which prints out &quot;Returning from C++ now&quot;</li>
+<li>JavaScript prints out &quot;JavaScript program has completed&quot;.</li>
+</ol>
+<p>Everything is happening in lock step - while the C++ is executing nothing is happening in JavaScript unless explicitly called <em>from C++</em>. We&#39;d prefer to see something like this:</p>
+<ol>
+<li>JavaScript calls our addon (<code>calculate_results_sync</code>)</li>
+<li>C++ code unpacks samples, starts thread, and returns.</li>
+<li>JavaScript executes next line(s) (prints out &quot;JavaScript program has completed&quot;)</li>
+</ol>
+<p><em>... after some time..</em></p>
+<ol>
+<li>C++ finishes the calculations and invokes <code>print_rain_results</code></li>
+<li>JavaScript prints the rains results to the screen</li>
+</ol>
+<h2 id="moving-to-asynchronous-with-worker-threads">Moving to Asynchronous with Worker Threads</h2>
+<p>Lets do a quick overview of how worker threads work in V8. In our model, there are <strong>two threads</strong>. The first thread is the <em>event loop thread</em> - its the thread that our JavaScript code is executing in, and its the thread we are <strong>still in</strong> when we cross over into the C++ addon. This is the thread that we <em>don&#39;t</em> want to stall by doing heavy calculations! The second thread (to be created) will be a worker thread managed by libuv, the library that supports asynchronous I/O in Node.</p>
+<p>Hopefully you&#39;re pretty familiar with threads - the key point here is that each thread has it&#39;s own stack - you can&#39;t share stack variables between the event loop thread and the worker thread! Threads do share the same heap though - so that&#39;s where we are going to put our input and output data, along with state information.</p>
+<h3 id="asynchronous-memory-headaches">Asynchronous Memory Headaches</h3>
+<p>Worker threads are a extremely useful concept, but it comes at a price. JavaScript is implicitly single threaded, and V8 is built around the notion that data within JavaScript is strictly accessible by one thread at a time (even though technically, they are on the heap!). There is sort of a &quot;golden rule&quot; in asynchronous addon development:</p>
+<blockquote>
+<p><em>you can&#39;t access V8 memory outside the event-loop&#39;s thread</em>.</p>
+</blockquote>
+<p>This essentially means if you want the <em>asynchronous</em> part of your addon to be able to (1) access input data sent from JavaScript and/or (2) return data to JavaScript then you need to create copies of the input/output data. You might notice however that this is <em>exactly</em> what we are already doing with our unpacking/packing strategy. At the end of this chapter, we&#39;ll dive a bit deeper into why copying data is nearly unavoidable when dealing with asynchronous execution.</p>
+<h3 id="the-c-addon-code">The C++ addon code</h3>
+<p>Our first step is to create yet another C++ function, and register it with our module.</p>
+<pre><code class="lang-cpp">// in node_rainfall.cc
+void CalculateResultsAsync(const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp;args) {
+    Isolate* isolate = args.GetIsolate();
+
+     // we&#39;ll start a worker thread to do the job 
+     // and call the callback here...
+
+    args.GetReturnValue().Set(Undefined(isolate));
+}
+...
+void init(Handle &lt;Object&gt; exports, Handle&lt;Object&gt; module) {
+  ...
+   NODE_SET_METHOD(exports, &quot;calculate_results_async&quot;, CalculateResultsAsync); 
+}
+</code></pre>
+<p>The <code>CalculateResultsAsync</code> function is where we&#39;ll end up kicking off a worker thread using libuv - but notice what it does right away: it <em>returns</em>! Nothing we fill into this function will be long running, all the real work will be done in the worker thread.</p>
+<p>On the C++ side of things, we&#39;re going to utilize <strong>three functions</strong> and a <strong>struct</strong> to coordinate everything:</p>
+<ol>
+<li><code>Worker Data</code> (struct) - will store plain old C++ input (locations) and output (rain_results) and the callback function that can be invoked when work is complete</li>
+<li><code>CalculateResultsAsync</code> - executes in event-loop thread, extracts input and stores it on the heap in <em>worker data</em>.</li>
+<li><code>WorkAsync</code> - the function that the worker thread will execute. We&#39;ll launch this thread from <code>CalculateResultsAsync</code> using the libuv API</li>
+<li><code>WorkAsyncComplete</code> - the function that libuv will invoke when the worker thread is finished. This function is executed on the <em>event loop thread</em>, <strong>not</strong> the worker thread. Figure 5 outlines the workflow we&#39;ll use.</li>
+</ol>
+<p><img src="imgs/async-model.png" alt="Node.js asynchronous model."></p>
+<p>Lets look at the C++ code, starting with our Work data structure:</p>
+<pre><code class="lang-cpp">struct Work {
+  uv_work_t  request;
+  Persistent&lt;Function&gt; callback;
+
+  std::vector&lt;location&gt; locations;
+  std::vector&lt;rain_result&gt; results;
+};
+</code></pre>
+<p>The vector will store our input and output. The request object is a handle that will actually loop back to the work object - the libuv API accepts pointers of type <code>uv_work_t</code> when starting worker threads. The <code>callback</code> variable is going to store the JavaScript callback. Importantly, its <code>Persistent&lt;&gt;</code>, meaning it will be kept in scope by V8 and not garbage collected. This seems confusing, since the callback will be executed in the event-loop thread, but we need to make it <code>Persistent</code> because when we initially return to JavaScript, all V8 locals are destroyed. A new Local context is created when we are about to call the JavaScript callback after the worker thread completes.</p>
+<p>Now lets look at the <code>CalculateResultsAsync</code> function</p>
+<pre><code class="lang-cpp">void CalculateResultsAsync(
+  const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp;args) {
+
+    Isolate* isolate = args.GetIsolate();
+
+    Work * work = new Work();
+    work-&gt;request.data = work;
+</code></pre>
+<p>Notice that the Work struct is created on the heap. Remember, local variables (and V8 Local objects) will be destroyed when this function returns - even though our worker thread will still be active. Here we also set the <code>uv_work_t</code> data pointer to point right back to the <code>work</code> struct so libuv will pass it back to us on the other side.</p>
+<pre><code class="lang-cpp">    ...
+    // extract each location (its a list) and 
+    // store it in the work package
+    // work (and thus, locations) is on the heap, 
+   // accessible in the libuv threads
+    Local&lt;Array&gt; input = Local&lt;Array&gt;::Cast(args[0]);
+    unsigned int num_locations = input-&gt;Length();
+    for (unsigned int i = 0; i &lt; num_locations; i++) {
+      work-&gt;locations.push_back(
+          unpack_location(isolate, 
+             Local&lt;Object&gt;::Cast(input-&gt;Get(i)))
+      );
+    }
+</code></pre>
+<p>Where earlier we now just went ahead and processed the rainfall data, now we&#39;ll kick off a worker thread using libuv. First we store the callback sent to use from JavaScript, and then we&#39;re off. Notice as soon as we call <code>uv_queue_work</code>, we return - the worker is executing in its own thread (<code>uv_queue_work</code> returns immediately).</p>
+<pre><code class="lang-cpp">
+    // store the callback from JS in the work  
+    // package so we can invoke it later
+    Local&lt;Function&gt; callback = 
+        Local&lt;Function&gt;::Cast(args[1]);
+    work-&gt;callback.Reset(isolate, callback);
+
+    // kick of the worker thread
+    uv_queue_work(uv_default_loop(),&amp;work-&gt;request,
+        WorkAsync,WorkAsyncComplete);
+
+    args.GetReturnValue().Set(Undefined(isolate));
+
+}
+</code></pre>
+<p>Notice the arguments to <code>uv_queue_work</code> - its the work-&gt;request we setup at the top of the function, and two functions we haven&#39;t seen yet - the function to start the thread in (<code>WorkAsync</code>) and the function to call when it&#39;s complete (<code>WorkAsyncComplete</code>).</p>
+<p>At this point, control is passed back to Node (JavaScript). If we had further JavaScript to execute, it would execute now. Basically, from the JavaScript side, our addon is acting the same as any other asynchronous call we typically make (like reading from files).</p>
+<h3 id="the-worker-thread">The worker thread</h3>
+<p>The worker thread code is actually really simple. We just need to process the data - and since its already extracted out of the V8 objects, its pretty vanilla C++ code. Notice our function has been called with the libuv work request parameter. We set this up above to point to our actual work data.</p>
+<pre><code class="lang-cpp">static void WorkAsync(uv_work_t *req)
+{
+    Work *work = static_cast&lt;Work *&gt;(req-&gt;data);
+
+    // this is the worker thread, lets build up the results
+    // allocated results from the heap because we&#39;ll need
+    // to access in the event loop later to send back
+    work-&gt;results.resize(work-&gt;locations.size());
+    std::transform(work-&gt;locations.begin(), 
+             work-&gt;locations.end(), 
+             work-&gt;results.begin(), 
+             calc_rain_stats);
+
+    // that wasn&#39;t really that long of an operation, 
+    // so lets pretend it took longer...
+    std::this_thread::sleep_for(chrono::seconds(3));
+}
+</code></pre>
+<p>Note - the code above also sleeps for extra effect, since the rainfall data isn&#39;t really that large.</p>
+<h3 id="when-the-worker-completes-">When the worker completes...</h3>
+<p>Once the worker thread completes, libuv handles calling our <code>WorkAsyncComplete</code> function - passing in the work request object again - so we can use it!</p>
+<pre><code class="lang-cpp">// called by libuv in event loop when async function completes
+static void WorkAsyncComplete(uv_work_t *req,int status)
+{
+    Isolate * isolate = Isolate::GetCurrent();
+    v8::HandleScope handleScope(isolate); 
+
+    Work *work = static_cast&lt;Work *&gt;(req-&gt;data);
+
+    // the work has been done, and now we pack the results
+    // vector into a Local array on the event-thread&#39;s stack.
+    Local&lt;Array&gt; result_list = Array::New(isolate);
+    for (unsigned int i = 0; i &lt; work-&gt;results.size(); i++ ) {
+      Local&lt;Object&gt; result = Object::New(isolate);
+      pack_rain_result(isolate, result, work-&gt;results[i]);
+      result_list-&gt;Set(i, result);
+    }
+
+    ...
+</code></pre>
+<p>The first part of the function above is pretty standard - we get the work data, and we package up the results into V8 objects rather than C++ vectors. Next, we need to invoke the JavaScript callback that was originally passed to the addon. <strong>Note, this part is a lot different in Node 0.11 than it was in previous versions of Node because of recent V8 API changes.</strong> If you are looking for ways to be a little less dependent on V8, take a look at Chapter 6 covering <code>Nan</code> - which abstracts away a lot of these issues.</p>
+<pre><code class="lang-cpp">    // set up return arguments
+    Handle&lt;Value&gt; argv[] = { Null(isolate), result_list };
+
+    // execute the callback
+    Local&lt;Function&gt;::New(isolate, work-&gt;callback)-&gt;
+      Call(isolate-&gt;GetCurrentContext()-&gt;Global(), 2, argv);
+
+   // Free up the persistent function callback
+    work-&gt;callback.Reset();
+
+    delete work;
+}
+</code></pre>
+<p>Once you call the callback, you&#39;re back in JavaScript! The <code>print_rain_results</code> function will be called...</p>
+<pre><code class="lang-javascript">rainfall.calculate_results_async(locations, 
+  function(err, result) {
+    if (err ) {
+      console.log(err);
+    }
+    else {
+      print_rain_results(result);
+    }
+  });
+</code></pre>
+<p>Note that since we&#39;ve used the standard call signature for the callback (err, data), you could use a standard promise library like bluebird to promisify your addon call.</p>
+<h2 id="understanding-v8-memory-and-worker-threads">Understanding V8 Memory and Worker Threads</h2>
+<p>As discussed earlier in the chapter, the worker thread API and programming model largely driven by the need to avoid accessing V8 data from our worker threads. In the event loop thread we&#39;ve constructed C++ objects containing copies of the V8 data sent as input. We&#39;ve performed calculations in the worker thread using only these C++ objects, and then repackaged them into V8 when we get back to the event loop thread.</p>
+<p>For situations where input data and output data is relatively small, this poses absolutely no issue - and these are probably the most common cases. However - what if your async addon is going to do a lot of computation over a large input? What if it generates a huge amount of data? Note that this <strong>copying input and output data is being done in the event loop</strong> - meaning if it takes a long time, we&#39;re blocking the event loop (which we hate doing!).</p>
+<p>So we have two problems:</p>
+<ol>
+<li>Copying data might be a waste of memory</li>
+<li>Copying data might take long, which ties up the Node.js event loop.</li>
+</ol>
+<p>Ideally, we&#39;d prefer a way to directly access V8 data from our worker threads. This is something that the official Node.js and V8 documentation both specifically say we can&#39;t do... however I think it&#39;s instructive to see why (and documentation covering the &quot;why&quot; is hard to come by!). The remainder of this chapter is about proving it won&#39;t work, and the ways we can mitigating the problem of copying within the event loop.</p>
+<p><strong>Warning:</strong> most of the following contains <em>anti-patterns</em> for asynchronous addons with Node.js.</p>
+<h3 id="handles-local-and-persistent">Handles - Local and Persistent</h3>
+<p>How does C++ access JavaScript data in the first place? A lot of this is actually covered in Chapter 1 and 2 - but let&#39;s briefly review it here. When your Node.js JavaScript code is executing and allocating variables, it&#39;s doing so within the V8 JavaScript engine. V8 allocates JavaScript variables within it&#39;s own address space inside what we&#39;ll call &quot;storage cells&quot;. When JavaScript calls into a C++ addon, the C++ code may obtain references to these storage cells by creating <em>handles</em> using the V8 API.</p>
+<p>The most common handle type is <code>Local</code> - meaning it&#39;s scope is tied specifically to the current <em>handle scope</em>. The scope of a handle is critical, as V8 is charged with implementing garbage collection - and to do this it must keep track of how many references point to given storage cells. These references are normally within JavaScript, but the handles in our C++ addons must be kept track of too.</p>
+<p>The most basic form of accessing pre-existing JavaScript variables occurs when we access arguments that have been passed into our C++ addon&#39;s when a method is invoked from JavaScript:</p>
+<p><img src="https://raw.githubusercontent.com/freezer333/node-v8-workers/master/imgs/MemorySystem-1.png" alt="Local handles and V8 storage cells"></p>
+<p>As you can see in Figure 6, the <code>Local&lt;Object&gt;</code> handle we create (<code>target</code>) will allow us to access V8 storage cells. <code>Local</code> handles only remain valid while the <code>HandleScope</code> object active when they are created is in scope. The <a href="https://developers.google.com/v8/embed?hl=en">V8 Embedder&#39;s Guide</a> is once again the primary place to learn about <code>HandleScope</code> objects - however put simply, they are containers for handles. At a given time, only one <code>HandleScope</code> is active within V8 (or more specifically, a V8 <code>Isolate</code>). Where&#39;s the <code>HandleScope</code> in the above example? Good question!</p>
+<p>It turns out that Node.js creates a <code>HandleScope</code> right before it calls our addon on the JavaScript code&#39;s behalf. This <code>HandleScope</code> is destroyed when the C++ addon function returns. Thus, any <code>Local</code> handle created inside our addon&#39;s function only survives until that function returns - meaning <code>Local</code> handles can never be accessed in worker threads when dealing with async addons - the worker threads clearly outlive the initial addon function call!</p>
+<h4 id="are-persistent-handles-the-answer-">Are <code>Persistent</code> handles the answer?</h4>
+<p>Maybe! As the name implies, <code>Persistent</code> handles are not automatically destroyed using <code>HandleScope</code>s - they can hang around indefinitely. Once you&#39;ve created a persistent handle in your C++ code, V8 will honor that reference (and make sure you can still access the storage cells it points to) until you explicitly release it (you do this by calling the handle&#39;s <code>Reset</code> method). At first glance, this appears to be precisely the tool that would allow a long-lived C++ worker thread to access V8 data.</p>
+<p>As a first experiment, lets maintain a reference to a JavaScript variable across C++ function calls by setting up a simple (non-threaded) example. Let&#39;s build a quick addon that allows JavaScript to pass in an object that the C++ hangs on to. Subsequent calls to the addon will <em>mutate</em> the JavaScript object originally passed into it - and we&#39;ll see these changes in JavaScript after the C++ returns.</p>
+<pre><code class="lang-cpp">#include &lt;node.h&gt;
+using namespace v8;
+
+// Stays in scope the entire time the addon is loaded.
+Persistent&lt;Object&gt; persist;
+
+void Mutate(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+  Isolate * isolate = args.GetIsolate();
+  Local&lt;Object&gt; target = Local&lt;Object&gt;::New(isolate, persist);
+
+  Local&lt;String&gt; key = String::NewFromUtf8(isolate, &quot;x&quot;);
+  // pull the current value of prop x out of the object
+  double current = target-&gt;ToObject()-&gt;Get(key)-&gt;NumberValue();
+  // increment prop x by 42
+  target-&gt;Set(key, Number::New(isolate,  current + 42));
+}
+
+void Setup(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+  Isolate * isolate = args.GetIsolate();
+  // Save a persistent handle for later use in Mutate
+  persist.Reset(isolate, args[0]-&gt;ToObject());
+}
+
+void init(Local&lt;Object&gt; exports) {
+  NODE_SET_METHOD(exports, &quot;setup&quot;, Setup);
+  NODE_SET_METHOD(exports, &quot;mutate&quot;, Mutate);
+}
+
+NODE_MODULE(mutate, init)
+</code></pre>
+<p>Notice the two functions exposed by the addon. The first, <code>Setup</code>, creates a (global) <code>Persistent</code> handle to the object passed in from JavaScript. This is a pretty dubious use of global variables within an addon - it&#39;s probably a bad idea for non-trivial stuff - but this is just for demonstration. The point is that <code>Persistent&lt;Object&gt; target</code>&#39;s scope is <strong>not</strong> tied to <code>Setup</code>.</p>
+<p>The second function exposed by the addon is <code>Mutate</code>, and it simply adds 42 to <code>target</code>&#39;s only property - <code>x</code>. Now let&#39;s look at the calling Node.js program.</p>
+<pre><code class="lang-javascript">const addon = require(&#39;./build/Release/mutate&#39;);
+
+var obj = {   x: 0  };
+
+// save the target JS object in the addon
+addon.setup(obj);
+console.log(obj);  // should print 0
+
+addon.mutate(obj);
+console.log(obj);  // should print 42
+
+addon.mutate(obj);
+console.log(obj);  // should print 84
+</code></pre>
+<p>When we run this program we&#39;ll see <code>obj.x</code> is initially 0, then 42, and then 84 when printed out. Living proof we can hang on to V8 within our addon across invocations... we&#39;re on to something!</p>
+<pre><code>&gt; node mutate.js
+{ x: 0 }
+{ x: 42 }
+{ x: 84 }
+</code></pre><h3 id="bring-on-the-worker-threads-">Bring on the worker threads!</h3>
+<p>Let&#39;s simulate a use case where a worker thread spends a long time modifying data iteratively. We&#39;ll modify the addon from above such that instead of needing JavaScript to call <code>Mutate</code>, it repeatedly changes <code>target</code>&#39;s x value every 500ms in a worker thread.</p>
+<pre><code class="lang-cpp">#include &lt;node.h&gt;
+#include &lt;chrono&gt;
+#include &lt;thread&gt;
+using namespace v8;
+
+// Stays in scope the entire time the addon is loaded.
+Persistent&lt;Object&gt; persist;
+
+void mutate(Isolate * isolate) {
+  while (true) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    // we need this to create a handle scope, since this
+    // function is NOT called by Node.js
+    v8::HandleScope handleScope(isolate);
+    Local&lt;String&gt; key = String::NewFromUtf8(isolate, &quot;x&quot;);
+    Local&lt;Object&gt; target = Local&lt;Object&gt;::New(isolate, persist);
+    double current = target-&gt;ToObject()-&gt;Get(key)-&gt;NumberValue();
+    target-&gt;Set(key, Number::New(isolate,  current + 42));
+    }
+}
+
+void Start(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+  Isolate * isolate = args.GetIsolate();
+  persist.Reset(isolate, args[0]-&gt;ToObject());
+
+  // spawn a new worker thread to modify the target object
+  std::thread t(mutate, isolate);
+  t.detach();
+}
+
+void init(Local&lt;Object&gt; exports) {
+  NODE_SET_METHOD(exports, &quot;start&quot;, Start);
+}
+
+NODE_MODULE(mutate, init)
+</code></pre>
+<p>Note - we&#39;re not using libuv or any of the (best) common practice you&#39;d normally see in an async addon; just ordinary C++ threads. Let&#39;s update the JavaScript to print out <code>obj</code> each second so we can see the fabulous work our C++ thread is doing.</p>
+<pre><code class="lang-javascript">
+const addon = require(&#39;./build/Release/mutate&#39;);
+
+var obj = {   x: 0  };
+
+addon.start(obj);
+
+setInterval( () =&gt; {
+  console.log(obj)
+}, 1000);
+</code></pre>
+<p>If you&#39;ve tried this before, you know what&#39;s coming next!</p>
+<pre><code>&gt; node mutate.js
+Segmentation fault: 11
+</code></pre><p>Lovely. It turns out V8 doesn&#39;t allow what we&#39;re trying to do. Specifically, a single V8 instance (represented by an <code>Isolate</code>) can never be accessed by two threads. That is unless, of course, we use the built in V8 synchronization facilities in the form of <code>v8::Locker</code>. By using <code>v8::Locker</code>, we can prove to the V8 <code>isolate</code> that we are switching between threads - but that we never allow simultaneous access from multiple threads.</p>
+<h3 id="understanding-v8-locker-objects">Understanding V8 Locker objects</h3>
+<p>Viewing V8 <code>isolate</code> as a shared resource, anyone familiar with thread synchronization can easily understand <code>v8::Locker</code> through the lens of a typical synchronization primitive in C++ - such as a mutex. The <code>v8::Locker</code> object is a lock, and we use <a href="https://en.wikipedia.org/wiki/Resource_Acquisition_Is_Initialization">RAII</a> to use it. Specifically, the creation of a <code>v8::Locker</code> object (constructor) automatically blocks and waits until no other thread is within the <code>isolate</code>. Destruction of the <code>v8::Locker</code> (when it goes out of scope) automatically releases the lock - allowing other threads to enter.</p>
+<p>We have two threads: (1) the Node.js (libuv) event loop and (2) the worker thread. Let&#39;s first look at adding locking to the worker:</p>
+<pre><code class="lang-cpp">void mutate(Isolate * isolate) {
+  while (true) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    std::cerr &lt;&lt; &quot;Worker thread trying to enter isolate&quot; &lt;&lt; std::endl;
+    v8::Locker locker(isolate);
+    isolate-&gt;Enter();
+
+    std::cerr &lt;&lt; &quot;Worker thread has entered isolate&quot; &lt;&lt; std::endl;
+    // we need this to create local handles, since this
+    // function is NOT called by Node.js
+    v8::HandleScope handleScope(isolate);
+    Local&lt;String&gt; key = String::NewFromUtf8(isolate, &quot;x&quot;);
+    Local&lt;Object&gt; target = Local&lt;Object&gt;::New(isolate, persist);
+    double current = target-&gt;ToObject()-&gt;Get(key)-&gt;NumberValue();
+    target-&gt;Set(key, Number::New(isolate,  current + 42));
+
+    // Note, the locker will go out of scope here, so the thread
+    // will leave the isolate (release the lock)
+  }
+}
+</code></pre>
+<p>At this point, since we haven&#39;t added locking anywhere else, you might think this would have very little effect if we run our program now. After all, there is seemingly no contention on the V8 lock, since the the worker is the only thread trying to lock it.</p>
+<pre><code>&gt; node mutate.js
+Worker thread trying to enter isolate
+{ x: 0 }
+{ x: 0 }
+{ x: 0 }
+{ x: 0 }
+{ x: 0 }
+{ x: 0 }
+{ x: 0 }
+^C
+</code></pre><p>This is not what we see though... instead, we see that our worker thread <em>never acquires the lock!</em>. This implies our event loop thread owns the <code>isolate</code>. Diving into the Node.js source code, we can see this is correct!. Inside the <code>StartNodeInstance</code> method in <code>src/node.cc</code> (at time of this writing, around line 4096), a Locker object is created about 20 lines or so before beginning to process the main message pumping loop that drives every Node.js program.</p>
+<pre><code class="lang-cpp">// Excerpt from 
+// https://github.com/nodejs/node/blob/master/src/node.cc#L4096
+static void StartNodeInstance(void* arg) {
+  ...
+  {
+    Locker locker(isolate);  
+    Isolate::Scope isolate_scope(isolate);
+    HandleScope handle_scope(isolate);
+
+  //... (lines removed for brevity...)
+
+    {
+      SealHandleScope seal(isolate);
+      bool more;
+      do {
+        v8::platform::PumpMessageLoop(default_platform, isolate);
+        more = uv_run(env-&gt;event_loop(), UV_RUN_ONCE);
+
+        if (more == false) {
+          v8::platform::PumpMessageLoop(default_platform, isolate);
+          EmitBeforeExit(env);
+          more = uv_loop_alive(env-&gt;event_loop());
+          if (uv_run(env-&gt;event_loop(), UV_RUN_NOWAIT) != 0)
+            more = true;
+        }
+      } while (more == true);
+    }
+    ....
+</code></pre>
+<p>Node.js acquires the <code>isolate</code> lock <em>before</em> beginning the main event loop - <em>and it never relinquishes it</em>. This is where we might begin to realize our goal of accessing V8 data from a worker thread is impractical with Node.js. In other V8 programs, you might very well allow workflows like this, however Node.js specifically disallows multi-threaded access by holding the <code>isolate</code>&#39;s lock throughout the entire lifetime of your program.</p>
+<h3 id="what-about-unlocker-">What about <code>Unlocker</code>?</h3>
+<p>If you look at the V8 documentation, you will find a counterpart to <code>Locker</code> though - <code>Unlocker</code>. Similar to <code>Locker</code>, it uses an RAII pattern - whenever it is in scope you&#39;ve effectively unlocked the isolate. Perhaps we could use this in the event loop thread to unlock the isolate...</p>
+<pre><code class="lang-cpp">// Remember - this is called in the event loop thread
+void Start(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+  Isolate * isolate = args.GetIsolate();
+  persist.Reset(isolate, args[0]-&gt;ToObject());
+
+  // spawn a new worker thread to modify the target object
+  std::thread t(mutate, isolate);
+  t.detach();
+
+  // This will allow the worker to enter...
+  isolate-&gt;Exit();
+  v8::Unlocker unlocker(isolate);
+}
+</code></pre>
+<p>Running this ends in disaster though - segmentation fault as soon as <code>Start</code> returns - the worker thread never even gets a chance. This really should not have been a surprise. When <code>Start</code> returns, it&#39;s relinquished the lock it had on V8 and actually exited the isolate - but this is the thread that actually runs our JavaScript - a clear conflict in logic! The <code>seg fault</code> is a result of Node.js calling into V8 (to return control back to JavaScript) after it&#39;s exited the isolate. If we delay the return of <code>Start</code>, we can see that the worker thread <em>is able to access V8 data</em>.</p>
+<pre><code class="lang-cpp">void Start(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+  ...
+
+  isolate-&gt;Exit();
+  v8::Unlocker unlocker(isolate);
+
+  // as soon as we return, Node&#39;s going to access V8 which
+  // will crash the program.  So we can stall...
+  while (1);
+}
+```
+```
+&gt; node mutate.js
+Worker thread trying to enter isolate
+Worker thread has entered isolate
+Worker thread trying to enter isolate
+Worker thread has entered isolate
+...
+</code></pre>
+<p>In theory, we could force JavaScript to call into the addon to periodically release the isolate to allow the worker thread to access it for a while.</p>
+<pre><code class="lang-cpp">void Start(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+  Isolate * isolate = args.GetIsolate();
+  persist.Reset(isolate, args[0]-&gt;ToObject());
+
+  // spawn a new worker thread to modify the target object
+  std::thread t(mutate, isolate);
+  t.detach();
+}
+
+void LetWorkerWork(
+  const FunctionCallbackInfo&lt;Value&gt; &amp;args) {
+
+  Isolate * isolate = args.GetIsolate();
+  {
+    isolate-&gt;Exit();
+      v8::Unlocker unlocker(isolate);
+
+    // let worker execute for 200 seconds
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+  }
+  //v8::Locker locker(isolate);
+  isolate-&gt;Enter();
+}
+</code></pre>
+<p>And here&#39;s the JavaScript, graciously calling <code>LetWorkerWork</code>.</p>
+<pre><code class="lang-javascript">const addon = require(&#39;./build/Release/mutate&#39;);
+
+var obj = {   x: 0  };
+
+addon.start(obj);
+
+setInterval( () =&gt; {
+  addon.let_worker_work();
+  console.log(obj)
+}, 1000);
+</code></pre>
+<p>As you can see - this <em>does work</em> - we an access V8 data from a worker thread while the event loop is asleep, with an <code>Unlocker</code> in scope.</p>
+<pre><code>&gt; node mutate.js
+Worker thread trying to enter isolate
+Worker thread has entered isolate
+Worker thread trying to enter isolate
+Worker thread has entered isolate
+Worker thread trying to enter isolate
+{ x: 84 }
+Worker thread has entered isolate
+Worker thread trying to enter isolate
+Worker thread has entered isolate
+{ x: 168 }
+Worker thread trying to enter isolate
+Worker thread has entered isolate
+Worker thread trying to enter isolate
+Worker thread has entered isolate
+{ x: 252 }
+...
+</code></pre><p>While this makes for a nice thought experiment - it&#39;s not practical. The purpose of this entire exercise is to allow a worker thread to asynchronously work with JavaScript data. Further, we wanted to do this without copying lots of data which would slow down (block) the event loop thread. Keeping those goals in mind, the unlocker approach fails miserably - the worker thread can only access V8 data when the event loop is sleeping!</p>
+<h3 id="why-typical-async-addons-work">Why typical async addons work</h3>
+<p>If you&#39;ve written async addons in C++ already, you surely have used <code>Persistent</code> handles to callbacks. You&#39;ve gone through the trouble of copying input data into plain old C++ variables, used <code>libuv</code> or <code>Nan</code>&#39;s wrappers to queue up a work object to be processed in a worker thread, and then copied the data back to V8 handles and invoked a callback.</p>
+<p>It&#39;s a complicated workflow - but hopefully the above discussion highlights why its so important. Callback functions (passed in as arguments to our addon when it&#39;s invoked) must be held in <code>Persistent</code> handles, since we must access them when our work thread is completed (and well after the initial C++ function returns to JavaScript). Note however that we <em>never</em> invoke that callback from the worker thread. We invoke the callback (accessing the <code>Persistent</code> handle) when our C++ &quot;completion&quot; function is called by <code>libuv</code> - <strong>in the event loop thread</strong>.</p>
+<p>Once you understand the threading rules, I think the elegance of the typical async solution pattern becomes a lot more clear.</p>
+<h3 id="workarounds-and-compromises">Workarounds and Compromises</h3>
+<p>Our premise was that we could have a C++ addon that used data <em>from JavaScript</em> as input. Since we now know making a copy is necessary - we come back to the issue of copying <em>a lot</em> of data. If you find yourself in this situation, there may be some very simple ways to mitigate the problem.</p>
+<p>First - does your input data <em>really need</em> to originate from JavaScript? If your addon is using a lot of data as input, where is that data <em>actually</em> coming from?</p>
+<p><strong>Is it coming from a database</strong>? <em>If so, then retrieve it in C++ - not JavaScript!</em></p>
+<p><strong>Is it coming from a file (or an upload)?</strong> <em>If so, can you avoid reading it into JavaScript variables and just pass the filename/location into C++?</em></p>
+<p>If your data doesn&#39;t sit somewhere already, and JavaScript code is actually building it up incrementally over time (before asking a C++ addon to use it), then another option would be to store the data in the C++ addon directly (as plain old C++ variables). As you build data, instead of creating JavaScript arrays/objects - make calls into the C++ addon to copy data (incrementally) into a C++ data structure that will remain in scope.</p>
+<p>There are few really good ways to do this. One is through the ObjectWrap API, which allows you to utilize C++ object directly from JavaScript - which is covered in the next chapter. JavaScript can work with a C++ addon&#39;s result data like this too - the worker thread can build up a C++ data structure wrapped in V8 accessors and your JavaScript can pull (copy) data from the structure when ever it needs to. While this approach does not avoid copying data, when used correctly it can avoid holding two copies of large input/output data - it only requires JavaScript to have copies of the parts of the shared data structure it needs &quot;at the moment&quot;.</p>
+<p>Another method involves building up Node.js Buffer objects and using those structures in your C++ addons. This technique works because Buffer objects allocate data <em>outside</em> of V8 implicitly - so they are indeed accessible from work threads.</p>
+<p><a href="ch05.html">Next Chapter</a><br><a href="index.html">Table of Contents</a></p>
+</body></html>

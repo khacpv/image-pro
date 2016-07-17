@@ -1,0 +1,516 @@
+<!doctype html><html><head>
+
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/styles/default.min.css">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/highlight.min.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+  <style>
+      .markdown-body {
+          box-sizing: border-box;
+          min-width: 200px;
+          max-width: 980px;
+          margin: 0 auto;
+          padding: 45px;
+      }
+      .highlight {
+        background-color:red;
+        background-color:#f1c40f;
+        padding:1em;
+      }
+  </style>
+<title>C++ and Node.js Integration</title>
+</head><body class='markdown-body'>
+<p><a href="index.html">Table of Contents</a></p>
+<h1 id="chapter-5-object-wrapping">Chapter 5 - Object Wrapping</h1>
+<p>We&#39;ve now seen a lot of the underlying mechanics of exposing C++ <em>functions</em> to JavaScript programs. We&#39;ve also seen how V8 data can be constructed in C++ addons and <em>returned</em> to JavaScript. There&#39;s a missing piece though - C++ objects. Classes (objects) serve the primary purpose of organizing data and methods into a single programming unit. Classes contain state (member variables), and methods (member functions) that can operate on them. JavaScript of course has classes too, but unfortunately there is no <em>seamless</em> way of simply taking an existing C++ class/object and letting JavaScript work with it. This means that C++ classes in your addon are essentially inaccessible, you can create them (on Node&#39;s C++ heap, not in V8 memory), but you can&#39;t easily return them to JavaScript. It&#39;s also impossible to let JavaScript directly access regular C++ objects created in your addon, since they don&#39;t reside in V8 memory.</p>
+<p>All that said, there <em>is</em> a way to build a bridge between JavaScript and your addon such that the above mentioned use cases are possible - however it requires you to create a <em>new type of object</em> - a <code>node::ObjectWrap</code>. <code>ObjectWrap</code> is a base class provided by Node.js that includes the plumbing to connect JavaScript code to a C++ object, however classes that extend <code>ObjectWrap</code> don&#39;t necessarily look like plain-old C++ objects (POCOs). Classes extending <code>ObjectWrap</code> can be instantiated from JavaScript using the <code>new</code> operator, and their methods (which have V8-oriented call signatures) can be directly invoked from JavaScript.</p>
+<p>The name <code>ObjectWrap</code> is sometimes misleading. Given an <em>existing</em> C++ object, you&#39;d be forgiven for thinking <code>ObjectWrap</code> will allow you to magically decorate your existing C++ class such that it&#39;s accessible to JavaScript. Unfortunately, the <em>wrap</em> part really refers to a way to group methods and state, not decorate existing classes. Should you wish to use an existing C++ class from JavaScript, you will certainly want to use <code>ObjectWrap</code>, however you need to write custom code to bridge each of your C++ class methods.</p>
+<h2 id="example-polynomial-class">Example: Polynomial Class</h2>
+<p>Let&#39;s start with a wish list. We want a second degree polynomial class (Ax<sup>2</sup> + Bx + C), which we can calculate roots (using the quadratic formula), calculate f(x), and set/get the three coefficients at anytime. From JavaScript, usage of the class would look like this:</p>
+<pre><code class="lang-javascript">var poly = new Polynomial(1, 3, 2);
+console.log(poly.roots()) // prints [-1, -2]
+console.log(poly.at(4)) // prints 30
+
+poly.c = 0;
+console.log(poly.at(4)) // prints 28
+
+//prints 1, 3, 0
+console.log(poly.a + &quot;, &quot; + poly.b + &quot; &quot; + poly.c);
+</code></pre>
+<p>Since we don&#39;t like doing things the easy way, we want to implement this class&#39;s logic in C++. We&#39;ll assume we are starting from a clean slate - we don&#39;t already have a suitable C++ implementation for Polynomial. Let&#39;s start with the class prototype for our Polynomial, along with the V8 bootstrapping code to export the class.</p>
+<p>The code for this chapter is available in full in the <code>nodecpp-demo</code> repository at <a href="https://github.com/freezer333/nodecpp-demo">https://github.com/freezer333/nodecpp-demo</a>, under the &quot;ObjectWrap&quot; section.</p>
+<pre><code class="lang-cpp">class WrappedPoly : public node::ObjectWrap {
+ public:
+  static void Init(v8::Local&lt;v8::Object&gt; exports);
+
+ private:
+  explicit WrappedPoly(
+      double a = 0, double b = 0, double c = 0);
+
+  ~WrappedPoly();
+
+  static void New(
+      const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args) ;
+
+  static v8::Persistent&lt;v8::Function&gt; constructor;
+  double a_;
+  double b_;
+  double c_;
+};
+
+void InitPoly(Local&lt;Object&gt; exports) {
+  WrappedPoly::Init(exports);
+}
+
+NODE_MODULE(polynomial, InitPoly)
+</code></pre>
+<p>This is the bare minimum setup for an <code>ObjectWrap</code>. Let&#39;s dissect the role of each method before looking at the code, as it&#39;s important to understand what&#39;s happening conceptually first - the code is convoluted. First notice that neither the constructor or destructor is public, they will not be called directly from outside the class (much less from JavaScript!).</p>
+<p>The only public method created inside <code>WrappedPoly</code> is a <code>static</code> method - <code>Init</code>. <code>Init</code> is responsible for adding all class functions that will be called from JavaScript to the <code>exports</code> object. <code>Init</code> is called by <code>InitPoly</code>, which is the entry point to our addon - it&#39;s called as soon as the addon is <code>require</code>d. In this preliminary implementation, the only class function exposed will be a constructor.</p>
+<pre><code class="lang-cpp">static void Init(v8::Local&lt;v8::Object&gt; exports) {
+  Isolate* isolate = exports-&gt;GetIsolate();
+
+  // Prepare constructor template
+  Local&lt;FunctionTemplate&gt; tpl = 
+    FunctionTemplate::New(isolate, New);
+
+  tpl-&gt;SetClassName(
+        String::NewFromUtf8(isolate, &quot;Polynomial&quot;));
+
+  tpl-&gt;InstanceTemplate()-&gt;SetInternalFieldCount(1);
+
+  exports-&gt;Set(
+      String::NewFromUtf8(isolate, &quot;Polynomial&quot;),
+      tpl-&gt;GetFunction());
+}
+</code></pre>
+<p><code>Init</code> first creates a <em>new JavaScript function</em> using a <code>FunctionTemplate</code>. This function is going to serve as a constructor function in JavaScript - it will be what is initially invoked when JavaScript executes <code>var poly = new Poly()</code>. Function templates are used in V8 to create functions within the V8 runtime, they can be associated with functions in the addon - in this case <code>New</code>. We&#39;ll look at <code>New</code>&#39;s implementation next, but for now you just need to know that it will be responsible for actually creating a new instance of <code>WrappedPoly</code>. <code>Init</code> associates the new function with a class called <code>Polynomial</code>, which only serves to ensure that objects created using this function show up with the correct name in JavaScript. <code>InstanceTemplate()</code> returns the <code>ObjectTemplate</code> associated with this function.</p>
+<p><em>Note that the call to <code>SetInternalFieldCount</code> is simply to allow for a single instance of a C++ object (the <code>WrappedPoly</code>) to be associated with the <code>ObjectTemplate</code>. The internal field count has nothing to do with the number of properties inside <code>WrappedPoly</code> or the JavaScript object that ends up being created. Typically, you&#39;ll keep this at 1, however this can also be used in advanced situations to associate additional data with the V8 memory associated with the template.</em></p>
+<p>Finally, we explicitly export the function created by the template as <code>Polynomial</code> to the module&#39;s export object. Now let&#39;s look at the actual details of <code>New</code>, which is mapped to any call in JavaScript to <code>Polynomial</code>.</p>
+<pre><code class="lang-cpp">static void New(const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+  double a = args[0]-&gt;IsUndefined() ? 0 : 
+    args[0]-&gt;NumberValue();
+  double b = args[1]-&gt;IsUndefined() ? 0 : 
+    args[1]-&gt;NumberValue();
+  double c = args[2]-&gt;IsUndefined() ? 0 : 
+    args[2]-&gt;NumberValue();
+  WrappedPoly* obj = new WrappedPoly(a, b, c);
+  obj-&gt;Wrap(args.This());
+  args.GetReturnValue().Set(args.This());
+}
+</code></pre>
+<p>As you can see, this is basically like any other function we&#39;ve exposed in other addons. The difference is that we&#39;ve explicitly associated this function with a JavaScript function <code>Polynomial</code>, which should be called within the context of <code>new Polynomial(...)</code>. The function examines the callers arguments and instantiates a new <code>WrappedPoly</code> object. The new C++ object then get&#39;s some Node.js magic sprinkled into is by calling it&#39;s <code>Wrap</code> method (inherited from <code>ObjectWrap</code>). Notice that it takes <code>args.This()</code> as it&#39;s parameter - it is setting things up such that the object representing <code>this</code> inside the <code>Polynomial</code> function is truly the newly created wrapped polynomial. Finally, the return value is set (again, the <code>this</code> variable in the JavaScript call to <code>Polynomial</code>).</p>
+<p>We can now build this addon and actually instantiate <code>Polynomial</code> from JavaScript:</p>
+<pre><code class="lang-javascript">const addon = require(&#39;./build/Release/polynomial&#39;);
+
+var poly = new addon.Polynomial(1, 3, 2);
+console.log(poly);
+</code></pre>
+<p>The resulting output will be:</p>
+<pre><code class="lang-bash">Polynomial {}
+</code></pre>
+<p>The class name <code>Polynomial</code> is a direct result of the <code>tpl-&gt;SetClassName</code> call in <code>Init</code>. While the code is working OK, it&#39;s not robust. If our calling JavaScript uses the <code>Polynomial</code> function as a normal function instead of a constructor, things go badly:</p>
+<pre><code class="lang-javascript">var poly = addon.Polynomial(1, 3, 2);
+console.log(poly);
+</code></pre>
+<p>... results in:</p>
+<pre><code class="lang-bash">Assertion failed: (handle-&gt;InternalFieldCount() &gt; 0), function Wrap, 
+file /Users/sfrees/.node-gyp/5.10.1/include/node/node_object_wrap.h, 
+Abort trap: 6
+</code></pre>
+<p>One might argue that the caller should not do such a thing, but we can capture this and still allow the call to return a new instance - we just need to detect if the function has been called using constructor syntax within the <code>New</code> function in the addon. If it hasn&#39;t, then we explicitly call the constructor (which actually just recalls <code>New</code> using constructor syntax!). Here&#39;s the complete listing, note the <code>Persistant</code> function that has been added called <code>constructor</code> - it&#39;s a persistent reference to the constructor we create in <code>Init</code> so it can be called from elsewhere (<code>New</code>) in the addon.</p>
+<pre><code class="lang-cpp">class WrappedPoly : public node::ObjectWrap {
+ public:
+  static void Init(v8::Local&lt;v8::Object&gt; exports) {
+      Isolate* isolate = exports-&gt;GetIsolate();
+
+      // Prepare constructor template
+      Local&lt;FunctionTemplate&gt; tpl = 
+            FunctionTemplate::New(isolate, New);
+
+      tpl-&gt;SetClassName(
+            String::NewFromUtf8(isolate, &quot;Polynomial&quot;));
+
+      tpl-&gt;InstanceTemplate()-&gt;SetInternalFieldCount(1);
+
+      //////////////////////////////////////////
+      // Store a reference to this constructor 
+      // so it can be called in New if New is called
+      // without constructor syntax.
+
+      constructor.Reset(isolate, tpl-&gt;GetFunction());
+      //////////////////////////////////////////
+
+      exports-&gt;Set(
+          String::NewFromUtf8(isolate, &quot;Polynomial&quot;),
+          tpl-&gt;GetFunction());
+  }
+
+ private:
+  explicit WrappedPoly(
+      double a = 0, double b = 0, double c = 0)
+    : a_(a), b_(b), c_(c) {}
+  ~WrappedPoly() {}
+
+  static void New(
+      const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args) {
+
+      Isolate* isolate = args.GetIsolate();
+
+      if (args.IsConstructCall()) {
+        // Invoked as constructor: `new Polynomial(...)`
+        double a = args[0]-&gt;IsUndefined() ? 0 : 
+            args[0]-&gt;NumberValue();
+        double b = args[1]-&gt;IsUndefined() ? 0 : 
+            args[1]-&gt;NumberValue();
+        double c = args[2]-&gt;IsUndefined() ? 0 : 
+            args[2]-&gt;NumberValue();
+        WrappedPoly* obj = new WrappedPoly(a, b, c);
+        obj-&gt;Wrap(args.This());
+        args.GetReturnValue().Set(args.This());
+      } else {
+        // Invoked as plain function `Polynomial(...)`, 
+        // turn into construct call.
+        const int argc = 3;
+        Local&lt;Value&gt; argv[argc] = { args[0] , args[1], args[2]};
+        Local&lt;Function&gt; cons = 
+            Local&lt;Function&gt;::New(isolate, constructor);
+        args.GetReturnValue().Set(
+            cons-&gt;NewInstance(argc, argv));
+      }
+  }
+
+  static v8::Persistent&lt;v8::Function&gt; constructor;
+  double a_;
+  double b_;
+  double c_;
+};
+
+Persistent&lt;Function&gt; WrappedPoly::constructor;
+</code></pre>
+<p>Now we&#39;ll get the same results if we do <code>var poly = addon.Polynomial(1, 2, 3);</code> as we get with <code>var poly = new addon.Polynomial(1, 2, 2);</code>.</p>
+<h2 id="adding-methods">Adding methods</h2>
+<p>In our original hypothetical JavaScript program we included a <code>roots</code> function and a <code>at</code> function. We can now add these to the object that gets returned by the <code>Polynomial</code> constructor. This is achieved by adding methods to the <em>prototype</em> of the instance associated with calls to the <code>Polynomial</code> constructor. For JavaScript beginners:</p>
+<blockquote>
+<p>All JavaScript objects inherit the properties and methods from their prototype. Objects created using an object literal, or with new Object(), inherit from a prototype called Object.prototype. Objects created with new Date() inherit the Date.prototype. The Object.prototype is on the top of the prototype chain. -- <em>www.w3schools.com</em></p>
+</blockquote>
+<p>In this situation, we are going to add a function to <code>Polynomial.prototype</code>, which is achieved through the Node.js macro <code>NODE_SET_PROTOTYPE_METHOD</code>. This macro uses the function template (which, recall, is a constructor for types <code>Polynomial</code>), a name (to be used from JavaScript), and an addon function. This is all done inside <code>Init</code>, where we configure the function template.</p>
+<pre><code class="lang-cpp">static void Init(v8::Local&lt;v8::Object&gt; exports) {
+  Isolate* isolate = exports-&gt;GetIsolate();
+
+  // Prepare constructor template
+  Local&lt;FunctionTemplate&gt; tpl = 
+      FunctionTemplate::New(isolate, New);
+  tpl-&gt;SetClassName(
+      String::NewFromUtf8(isolate, &quot;Polynomial&quot;));
+  tpl-&gt;InstanceTemplate()-&gt;SetInternalFieldCount(1);
+
+  ////////////////////////////////////////////////
+  // Add the &quot;at&quot; function to the object prototype
+  ////////////////////////////////////////////////
+  NODE_SET_PROTOTYPE_METHOD(tpl, &quot;at&quot;, At);
+
+  constructor.Reset(isolate, tpl-&gt;GetFunction());
+  exports-&gt;Set(String::NewFromUtf8(isolate, &quot;Polynomial&quot;),
+           tpl-&gt;GetFunction());
+}
+</code></pre>
+<p><code>At</code>&#39;s implementation is straightforward, it&#39;s just a normal addon function, with the exception of how it gains access to the underlying <code>WrappedPoly</code> object.</p>
+<pre><code class="lang-cpp">void WrappedPoly::At(
+  const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args) {
+
+  Isolate* isolate = args.GetIsolate();
+  double x = args[0]-&gt;IsUndefined() ? 0 : 
+    args[0]-&gt;NumberValue();
+  WrappedPoly* poly = 
+    ObjectWrap::Unwrap&lt;WrappedPoly&gt;(args.Holder());
+
+  double results =  x * x * poly-&gt;a_ + 
+                    x * poly-&gt;b_ + 
+                    poly-&gt;c_;
+
+  args.GetReturnValue().Set(
+    Number::New(isolate, results));
+}
+</code></pre>
+<p>When JavaScript calls <code>poly.at</code>, based on the rules of JavaScript, whatever is on the left side of the <code>.</code> operator will be used as <code>this</code> in the function (<code>at</code>). In V8, <code>args.Holder()</code> refers to the <code>this</code> property at the time the function is invoked. Therefore, <code>args.Holder()</code> is returning our <code>WrappedPoly</code> - or at least the wrapper around it. Utilizing the static <code>Unwrap</code> method, we can extract the actual C++ object that was created when <code>New</code> was actually called. The rest of the code simply calculates the result and returns the value. The implementation of the <code>roots</code> function will follow the exact same pattern as <code>at</code>, only returning a <code>v8::Array</code> instead. We&#39;ll defer that until the complete code is shown at the end of this section.</p>
+<h2 id="adding-properties-accessor-mutators-">Adding properties (accessor/mutators)</h2>
+<p>In JavaScript there is no concept of private member variables, object simply have properties. The following code JavaScript code will have strange results when using our addon &quot;as is&quot; though:</p>
+<pre><code class="lang-javascript">var poly = new Polynomial(1, 3, 2);
+console.log(poly.at(4)) // prints 30
+
+poly.c = 0; // no error
+
+// should print 28, but prints 30!
+console.log(poly.at(4)) 
+
+console.log(poly);
+</code></pre>
+<p>The strange bit is that setting poly.c should (in theory) make the polynomial evaluate to 28 - however the addon reports 30 still. The reason is likely obvious: we haven&#39;t built any sort of bridge between <code>c</code> in the JavaScript object returned by <code>Polynomial</code> and the <code>c_</code> member variable held inside the <code>WrappedPoly</code> instance that is hiding behind it. Thankfully, we can fix this by setting accessors on the <code>ObjectTemplate</code> we are using when creating the <code>Polynomial</code> constructor. We do this by revisiting <code>Init</code> once again:</p>
+<pre><code class="lang-cpp">static void Init(v8::Local&lt;v8::Object&gt; exports) {
+  Isolate* isolate = exports-&gt;GetIsolate();
+
+  // Prepare constructor template
+  Local&lt;FunctionTemplate&gt; tpl = 
+    FunctionTemplate::New(isolate, New);
+
+  tpl-&gt;SetClassName(
+        String::NewFromUtf8(isolate, &quot;Polynomial&quot;));
+
+  tpl-&gt;InstanceTemplate()-&gt;SetInternalFieldCount(1);
+
+  NODE_SET_PROTOTYPE_METHOD(tpl, &quot;at&quot;, At);
+
+  ////////////////////////////////
+  // Add an accessor - get/set
+  ///////////////////////////////  
+  tpl-&gt;InstanceTemplate()-&gt;SetAccessor(
+      String::NewFromUtf8(isolate, &quot;c&quot;), GetC, SetC);
+
+  constructor.Reset(isolate, tpl-&gt;GetFunction());
+
+  exports-&gt;Set(
+      String::NewFromUtf8(isolate, &quot;Polynomial&quot;),
+      tpl-&gt;GetFunction());
+  }
+</code></pre>
+<p>The call to <code>SetAccessor</code> takes a property name and then callbacks to invoke when that particular property is accessed or mutated in JavaScript. The call signatures are a bit different than standard addon functions - they have extra parameters so you can inspect which property name is being accessed (likely redundant information, but can be useful for certain designs) and (for setters) the value being assigned. Here&#39;s the call signatures for GetC and SetC, which are defined in <code>WrappedPoly</code>:</p>
+<pre><code class="lang-cpp">static void GetC(Local&lt;String&gt; property, 
+    const PropertyCallbackInfo&lt;Value&gt;&amp; info)
+
+static void SetC(Local&lt;String&gt; property, 
+    Local&lt;Value&gt; value, 
+    const PropertyCallbackInfo&lt;void&gt;&amp; info);
+</code></pre>
+<p>The implementations simply set/return the correct property on the unwrapped polynomial object, much in the same way as the <code>at</code> function did:</p>
+<pre><code class="lang-cpp">void WrappedPoly::GetC(Local&lt;String&gt; property, 
+  const PropertyCallbackInfo&lt;Value&gt;&amp; info) {
+
+  Isolate* isolate = info.GetIsolate();
+  WrappedPoly* obj = ObjectWrap::Unwrap&lt;WrappedPoly&gt;(info.This());
+  info.GetReturnValue().Set(Number::New(isolate, obj-&gt;c_));
+}
+
+void WrappedPoly::SetC(Local&lt;String&gt; property, 
+  Local&lt;Value&gt; value, 
+  const PropertyCallbackInfo&lt;void&gt;&amp; info) {
+
+  WrappedPoly* obj = ObjectWrap::Unwrap&lt;WrappedPoly&gt;(info.This());
+  obj-&gt;c_ = value-&gt;NumberValue();
+}
+</code></pre>
+<p>Now when we manipulate properties from JavaScript we&#39;ll see the correct results. When we print our object, we also see the actual properties inside the <code>Polynomial</code> object itself.</p>
+<pre><code class="lang-javascript">var poly = new Polynomial(1, 3, 2);
+console.log(poly.at(4)) // prints 30
+
+poly.c = 0;
+
+
+console.log(poly.at(4))  // prints 28 
+
+console.log(poly);  // Polynomial {c:0}
+</code></pre>
+<h2 id="completed-wrapped-polynomial-class">Completed Wrapped Polynomial class</h2>
+<p>To round out the implementation, here is the complete code listing for the polynomial class. There are a few changes from what has been shown above - namely the implementation of the accessors. Since the polynomial class has three properties (a, b, c) one might expect to see three sets of accessors (getters and setters) - however this would require a lot of duplication of V8 boilerplate code. Instead, I&#39;ve created one set of accessors - <code>GetCoeff</code> and <code>SetCoeff</code>, which inspect the property parameter to determine which coefficient to return or change. This is a matter of personal preference, you could certainly elect to create 6 distinct functions. In addition, the <code>roots</code> function is implemented as well.</p>
+<pre><code class="lang-cpp">#include &lt;node.h&gt;
+#include &lt;node_object_wrap.h&gt;
+#include &lt;iostream&gt;
+#include &lt;cmath&gt;
+using namespace std;
+using namespace v8;
+
+class WrappedPoly : public node::ObjectWrap {
+ public:
+  static void Init(v8::Local&lt;v8::Object&gt; exports) {
+      Isolate* isolate = exports-&gt;GetIsolate();
+
+      Local&lt;FunctionTemplate&gt; tpl = 
+        FunctionTemplate::New(isolate, New);
+      tpl-&gt;SetClassName(
+            String::NewFromUtf8(isolate, &quot;Polynomial&quot;));
+      tpl-&gt;InstanceTemplate()-&gt;SetInternalFieldCount(1);
+
+      NODE_SET_PROTOTYPE_METHOD(tpl, &quot;at&quot;, At);
+      NODE_SET_PROTOTYPE_METHOD(tpl, &quot;roots&quot;, Roots);
+
+      tpl-&gt;InstanceTemplate()-&gt;SetAccessor(
+          String::NewFromUtf8(isolate, &quot;a&quot;), GetCoeff, SetCoeff);
+      tpl-&gt;InstanceTemplate()-&gt;SetAccessor(
+          String::NewFromUtf8(isolate, &quot;b&quot;), GetCoeff, SetCoeff);
+      tpl-&gt;InstanceTemplate()-&gt;SetAccessor(
+          String::NewFromUtf8(isolate, &quot;c&quot;), GetCoeff, SetCoeff);
+
+      constructor.Reset(isolate, tpl-&gt;GetFunction());
+      exports-&gt;Set(String::NewFromUtf8(isolate, &quot;Polynomial&quot;),
+               tpl-&gt;GetFunction());
+  }
+
+ private:
+  explicit WrappedPoly(double a = 0, double b = 0, double c = 0)
+    : a_(a), b_(b), c_(c) {}
+  ~WrappedPoly() {}
+
+  static void New(const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args) {
+      Isolate* isolate = args.GetIsolate();
+
+      if (args.IsConstructCall()) {
+        // Invoked as constructor: `new Polynomial(...)`
+        double a = args[0]-&gt;IsUndefined() ? 0 : 
+            args[0]-&gt;NumberValue();
+        double b = args[1]-&gt;IsUndefined() ? 0 : 
+            args[1]-&gt;NumberValue();
+        double c = args[2]-&gt;IsUndefined() ? 0 : 
+            args[2]-&gt;NumberValue();
+        WrappedPoly* obj = new WrappedPoly(a, b, c);
+        obj-&gt;Wrap(args.This());
+        args.GetReturnValue().Set(args.This());
+      } else {
+
+        // Invoked as plain function `Polynomial(...)`, 
+        // turn into construct call.
+        const int argc = 3;
+        Local&lt;Value&gt; argv[argc] = { args[0] , args[1], args[2]};
+        Local&lt;Function&gt; cons = 
+            Local&lt;Function&gt;::New(isolate, constructor);
+        args.GetReturnValue().Set(cons-&gt;NewInstance(argc, argv));
+      }
+  }
+  static void At(const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args);
+  static void Roots(const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args);
+
+  static void GetCoeff(Local&lt;String&gt; property, 
+    const PropertyCallbackInfo&lt;Value&gt;&amp; info);
+  static void SetCoeff(Local&lt;String&gt; property, 
+    Local&lt;Value&gt; value, const PropertyCallbackInfo&lt;void&gt;&amp; info);
+
+  static v8::Persistent&lt;v8::Function&gt; constructor;
+  double a_;
+  double b_;
+  double c_;
+};
+
+Persistent&lt;Function&gt; WrappedPoly::constructor;
+
+void WrappedPoly::At(
+    const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args) {
+
+    Isolate* isolate = args.GetIsolate();
+    double x = args[0]-&gt;IsUndefined() ? 0 : args[0]-&gt;NumberValue();
+    WrappedPoly* poly = ObjectWrap::Unwrap&lt;WrappedPoly&gt;(args.Holder());
+
+    double results = x * x * poly-&gt;a_ + x * poly-&gt;b_ + poly-&gt;c_;
+
+    args.GetReturnValue().Set(Number::New(isolate, results));
+}
+
+void WrappedPoly::Roots(
+    const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args) {
+
+    Isolate* isolate = args.GetIsolate();
+    WrappedPoly* poly = ObjectWrap::Unwrap&lt;WrappedPoly&gt;(args.Holder());
+
+    Local&lt;Array&gt; roots = Array::New(isolate);
+    double desc = poly-&gt;b_ * poly-&gt;b_ - (4 * poly-&gt;a_ * poly-&gt;c_);
+    if (desc &gt;= 0 ) {
+        double r = (-poly-&gt;b_ + sqrt(desc))/(2 * poly-&gt;a_);
+        roots-&gt;Set(0,Number::New(isolate, r));
+        if ( desc &gt; 0) {
+            r = (-poly-&gt;b_ - sqrt(desc))/(2 * poly-&gt;a_);
+            roots-&gt;Set(1,Number::New(isolate, r));
+        }
+    }
+    args.GetReturnValue().Set(roots);
+}
+
+void WrappedPoly::GetCoeff(Local&lt;String&gt; property, 
+    const PropertyCallbackInfo&lt;Value&gt;&amp; info) {
+
+    Isolate* isolate = info.GetIsolate();
+    WrappedPoly* obj = ObjectWrap::Unwrap&lt;WrappedPoly&gt;(info.This());
+
+    v8::String::Utf8Value s(property);
+    std::string str(*s);
+
+    if ( str == &quot;a&quot;) {
+        info.GetReturnValue().Set(Number::New(isolate, obj-&gt;a_));
+    }
+    else if (str == &quot;b&quot;) {
+        info.GetReturnValue().Set(Number::New(isolate, obj-&gt;b_));
+    }
+    else if (str == &quot;c&quot;) {
+        info.GetReturnValue().Set(Number::New(isolate, obj-&gt;c_));
+    }
+
+}
+
+void WrappedPoly::SetCoeff(Local&lt;String&gt; property, 
+    Local&lt;Value&gt; value, const PropertyCallbackInfo&lt;void&gt;&amp; info) {
+
+    WrappedPoly* obj = ObjectWrap::Unwrap&lt;WrappedPoly&gt;(info.This());
+
+    v8::String::Utf8Value s(property);
+    std::string str(*s);
+
+    if ( str == &quot;a&quot;) {
+        obj-&gt;a_ = value-&gt;NumberValue();
+    }
+    else if (str == &quot;b&quot;) {
+        obj-&gt;b_ = value-&gt;NumberValue();
+    }
+    else if (str == &quot;c&quot;) {
+        obj-&gt;c_ = value-&gt;NumberValue();
+    }
+}
+
+void InitPoly(Local&lt;Object&gt; exports) {
+  WrappedPoly::Init(exports);
+}
+
+NODE_MODULE(polynomial, InitPoly)
+</code></pre>
+<h2 id="wrapping-existing-objects">Wrapping existing objects</h2>
+<p>What if we already had a Polynomial class in C++ code, which was just a normal C++ class unaware of V8 and Node? Unfortunately, we still need to do all the same steps as we&#39;ve seen above. You would still want to create a new <code>WarppedPoly</code> class, and create all the same V8 functions to expose features such as <code>roots</code>, <code>at</code>, and property accessors. The difference in this scenario is that <code>WrappedPolynomial</code> would likely have an instance of your <code>Polynomial</code> POCO instead of three coefficients of it&#39;s own. V8-based functions like <code>roots</code> and <code>at</code> would simply forward the calls on to the POCO <code>Polynomial</code> implementation. It&#39;s not the most satisfying solution - since it means duplicating class interfaces - but it will allow you to export your POCO functionality to your Node.js programs.</p>
+<h2 id="wrapped-objects-as-arguments">Wrapped Objects as Arguments</h2>
+<p>As a final example, let&#39;s take a look at situations where instances of your <em>wrapped</em> class are passed <em>back</em> into C++ addon functions from JavaScript. An example of this might be an addon with a standalone <code>add</code> function which accepts two polynomials. Here&#39;s what it might look like from the JavaScript perspective:</p>
+<pre><code class="lang-javascript">var polyA = new addon.Polynomial(1, 3, 2);
+var polyB = new addon.Polynomial(8, -2, 4);
+var polyC = addon.add(polyA, polyB);
+
+// prints 9, 1, -2
+console.log(polyC.a + &quot;, &quot; + polyC.b + &quot;, &quot; + polyC.c);
+</code></pre>
+<p>Here, the <code>add</code> function is a static member of Polynomial.</p>
+<pre><code class="lang-cpp">// defined within the WrappedPoly class
+static void Add(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate* isolate = args.GetIsolate();
+
+    WrappedPoly* obj1 = 
+        node::ObjectWrap::Unwrap&lt;WrappedPoly&gt;(
+        args[0]-&gt;ToObject());
+    WrappedPoly* obj2 = 
+        node::ObjectWrap::Unwrap&lt;WrappedPoly&gt;(
+        args[1]-&gt;ToObject());
+
+    double a = obj1-&gt;a_ + obj2-&gt;a_;
+    double b = obj1-&gt;b_ + obj2-&gt;b_;
+    double c = obj1-&gt;c_ + obj2-&gt;c_;
+
+    Local&lt;Value&gt; argv[3] = { 
+        Number::New(isolate, a), 
+        Number::New(isolate, b), 
+        Number::New(isolate, c)};
+
+    Local&lt;Function&gt; cons = 
+        Local&lt;Function&gt;::New(isolate, constructor);
+    args.GetReturnValue().Set(cons-&gt;NewInstance(3, argv));
+ }
+</code></pre>
+<p>The method is exported from the module using standard V8 style - it&#39;s not exported as part of the JS Polynomial class.</p>
+<pre><code class="lang-cpp">void InitPoly(Local&lt;Object&gt; exports) {
+  WrappedPoly::Init(exports);
+  NODE_SET_METHOD(exports, &quot;add&quot;, WrappedPoly::Add);
+}
+</code></pre>
+<p><a href="ch06.html">Next Chapter</a><br><a href="index.html">Table of Contents</a></p>
+</body></html>

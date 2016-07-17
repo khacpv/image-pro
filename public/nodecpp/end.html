@@ -1,0 +1,31 @@
+<!doctype html><html><head>
+
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/styles/default.min.css">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/highlight.min.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+  <style>
+      .markdown-body {
+          box-sizing: border-box;
+          min-width: 200px;
+          max-width: 980px;
+          margin: 0 auto;
+          padding: 45px;
+      }
+      .highlight {
+        background-color:red;
+        background-color:#f1c40f;
+        padding:1em;
+      }
+  </style>
+<title>C++ and Node.js Integration</title>
+</head><body class='markdown-body'>
+<p><a href="index.html">Table of Contents</a></p>
+<h1 id="closing">Closing</h1>
+<p>I really hope you&#39;ve learned some useful new things from this book. I&#39;ve enjoyed writing it, and I&#39;m excited to see how Node and C++ addons will evolve in the future.</p>
+<p>The V8 runtime is evolving, and there are many important features that I haven&#39;t even touched upon in this book, such as support for exceptions, maybe types, promises, typed arrays, etc.). Node.js doesn&#39;t necessarily need to be bound to V8 though - while its still a work in progress, the <a href="https://github.com/nodejs/node-chakracore">Node-Chakra</a> is allowing Node.js to run on top of Microsoft Edge&#39;s JavaScript engine as well. Using different engines will place an even greater importance on projects like NAN, as it will become nearly impossible to natively target V8 if you hope for wide-spread adoption.</p>
+<p>The JavaScript and C++ space isn&#39;t limited to just addons - there are really exciting projects like Emscripten that allow C and C++ binaries to be transpiled to JavaScript so you can run C++ programs in the browser. Pushing this further, <a href="https://github.com/charto/nbind">nbind</a> allows developers to simultaneously target Node.js and browsers with C/C++ code using compiler directives and headers - which could completely change the way C++ is integrated with JavaScript.</p>
+<p>If you&#39;ve liked this book, please visit my blog - <a href="http://blog.scottfrees.com">blog.scottfrees.com</a> to access more content about this topic, and maybe even leave a nice review!</p>
+<p>Thanks -</p>
+</body></html>

@@ -1,0 +1,365 @@
+<!doctype html><html><head>
+
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/styles/default.min.css">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/highlight.min.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+  <style>
+      .markdown-body {
+          box-sizing: border-box;
+          min-width: 200px;
+          max-width: 980px;
+          margin: 0 auto;
+          padding: 45px;
+      }
+      .highlight {
+        background-color:red;
+        background-color:#f1c40f;
+        padding:1em;
+      }
+  </style>
+<title>C++ and Node.js Integration</title>
+</head><body class='markdown-body'>
+<p><a href="index.html">Table of Contents</a></p>
+<h1 id="appendix-b-buffers">Appendix B - Buffers</h1>
+<p>Chapter 2 of this book covered using typical JavaScript data types when moving data to and from C++ addons. Node.js introduces a new data type, <code>Buffer</code>, which is not found in standard JavaScript (although new versions of JavaScript now have typed arrays, which provide much of the same functionality). Node.js <code>Buffer</code> objects are used to represent raw binary data, similar to a C++ array (in this case, integer array). Whenever you work with Node.js file I/O or TCP you are likely going to work with <code>Buffer</code> objects. While it is common to convert <code>Buffer</code> objects to JavaScript strings (by specifying the encoding of the integer data), often times you may wish to operate directly on the binary data as well.</p>
+<p><code>Buffer</code> objects are an interesting aspect OF C++ addon development, first because they are in fact <em>not</em> part of V8 - but part of Node.js. Secondly, <code>Buffer</code> object data is unique in that it is <em>not</em> allocated inside the V8 heap - an attribute that can allow us to sidestep some data copying when dealing with C++ addons and worker threads (which will be discussed below).</p>
+<p>In this section, we&#39;ll look at how <code>Buffer</code> objects can be passed to and from C++ addons using NAN. NAN is used because the <code>Buffer</code> object API has actually undergone some significant changes recently, and NAN will shield us from these issues. We&#39;ll look at <code>Buffer</code> objects through the lens of an image converter - specifically converting binary png image data into bitmap formatted binary data.</p>
+<p>All of the code for this section is available in full in the <code>nodecpp-demo</code> repository at <a href="https://github.com/freezer333/nodecpp-demo">https://github.com/freezer333/nodecpp-demo</a>, under the &quot;Buffers&quot; section.</p>
+<h2 id="example-png-and-bmp-image-processing">Example: PNG and BMP Image Processing</h2>
+<p>Image processing, in general, is anything that manipulates/transforms an image. An image of course is a big chunk of binary data - in it&#39;s most basic state an integer (or 3 or 4) can be used to represent each pixel in an image, and those integers can be stored in a file or held in a contiguously allocated array. Typically image data is not held in <em>raw</em> data form though, it&#39;s compressed/encoded into a image format standard such as png, gif, bmp, jpeg, and others.</p>
+<p>Image processing is a good candidate for C++ addons, as image processing can often be time consuming, CPU intensive, and some processing technique have parallelism that C++ can exploit. For the example we&#39;ll look at now, we&#39;ll simply convert png formatted data into bmp formatted data[1]. There are a good number of existing, open source C++ libraries that can help us with this task, I&#39;m going to use LodePNG as it is dependency free and quite simple to use. LodePNG can be found at <a href="http://lodev.org/lodepng/">http://lodev.org/lodepng/</a>, and it&#39;s source code is at <a href="https://github.com/lvandeve/lodepng">https://github.com/lvandeve/lodepng</a>. Many thanks to the developer, Lode Vandevenne for providing such an easy to use library!</p>
+<h2 id="setting-up-the-addon">Setting up the addon</h2>
+<p>For this addon, we&#39;ll create the following directory structure, which includes source code downloaded from <a href="https://github.com/lvandeve/lodepng">https://github.com/lvandeve/lodepng</a>, namely <code>lodepng.h</code> and <code>lodepng.cpp</code>.</p>
+<pre><code>/png2bmp
+ | 
+ |--- binding.gyp
+ |--- package.json
+ |--- png2bmp.cpp  # the addon
+ |--- index.js     # program to test the addon
+ |--- sample.png   # input (will be converted to bmp)
+ |--- lodepng.h    # from lodepng distribution
+ |--- lodepng.cpp  # From loadpng distribution
+</code></pre><p>To download the complete addon, head over to <a href="https://github.com/freezer333/nodecpp-demo">https://github.com/freezer333/nodecpp-demo</a>, this particular example is in the <code>buffers</code> directory.</p>
+<p><code>lodepng.cpp</code> contains all the necessary code for doing image processing, and I will not discuss it&#39;s working in detail. In addition, the lodepng distribution contains sample code that allows you to specifically convert between png and bmp - I&#39;ve adapted it slightly, and will put it in the addon source code file <code>png2bmp.cpp</code> which we will take a look at shortly. Let&#39;s first look at what the actual JavaScript program looks like though - before diving into the addon code itself:</p>
+<pre><code class="lang-javascript">&#39;use strict&#39;;
+const fs = require(&#39;fs&#39;);
+const path = require(&#39;path&#39;);
+const png2bmp = require(&#39;./build/Release/png2bmp&#39;);
+var png_file = process.argv[2];
+var bmp_file = path.basename(png_file, &#39;.png&#39;) + &quot;.bmp&quot;;
+var png_buffer = fs.readFileSync(png_file);
+
+png2bmp.saveBMP(bmp_file, png_buffer, png_buffer.length);
+</code></pre>
+<p>This program simply requires <code>fs</code>, <code>path</code>, and our addon, which will be located at <code>./build/Releast/png2bmp</code>. The program grabs an input (png) filename from the command line arguments and <strong>reads the png into a <code>Buffer</code></strong>. It then sends the <code>Buffer</code> into the addon, which saves the converted BMP to the filename as specified. Thus, the addon is converting png to BMP and saving the results to a file - returning nothing.</p>
+<p>Here&#39;s the <code>package.json</code>, which is setting up <code>npm start</code> to invoke the <code>index.js</code> program with a command line argument of <code>sample.png</code>. It&#39;s a pretty generic image:</p>
+<pre><code class="lang-javascript">{
+  &quot;name&quot;: &quot;png2bmp&quot;,
+  &quot;version&quot;: &quot;0.0.1&quot;,
+  &quot;private&quot;: true,
+  &quot;gypfile&quot;: true,
+  &quot;scripts&quot;: {
+    &quot;start&quot;: &quot;node index.js sample.png&quot;
+  },
+  &quot;dependencies&quot;: {
+    &quot;nan&quot;: &quot;*&quot;
+  }
+}
+</code></pre>
+<p><img src="imgs/sample.png" alt="sample.png"></p>
+<p>Finally, let&#39;s take a look at the <code>binding.gyp</code> file - which is fairly standard, other than the presence of a few compiler flags needed to compile lodepng. It also includes the requisite references to NAN.</p>
+<pre><code class="lang-javascript">{
+  &quot;targets&quot;: [
+    {
+      &quot;target_name&quot;: &quot;png2bmp&quot;,
+      &quot;sources&quot;: [ &quot;png2bmp.cpp&quot;, &quot;lodepng.cpp&quot; ], 
+      &quot;cflags&quot;: [&quot;-Wall&quot;, &quot;-Wextra&quot;, &quot;-pedantic&quot;, &quot;-ansi&quot;, &quot;-O3&quot;],
+      &quot;include_dirs&quot; : [&quot;&lt;!(node -e \&quot;require(&#39;nan&#39;)\&quot;)&quot;]
+    }
+  ]
+}
+</code></pre>
+<p><code>png2bmp.cpp</code> will mostly contain V8/NAN code, however it does have one image processing utility function - <code>do_convert</code>, adapted from lodepng&#39;s png to bmp example code. The function accepts a <code>vector&lt;unsigned char&gt;</code> containing input data (png format) and a <code>vector&lt;unsigned char&gt;</code> to put it&#39;s output (bmp format) data into. That function in turn calls <code>encodeBMP</code>, which is straight from the lodepng examples. Here is the full code listing of these two functions. The details are not important to understanding addon <code>Buffer</code> objects, but are included here for completeness. Our addon entry point(s) will call <code>do_convert</code>.</p>
+<pre><code class="lang-cpp">/*
+ALL LodePNG code in this file is adapted from lodepng&#39;s 
+examples, found at the following URL:
+https://github.com/lvandeve/lodepng/blob/
+master/examples/example_bmp2png.cpp&#39;
+*/
+
+void encodeBMP(std::vector&lt;unsigned char&gt;&amp; bmp, 
+  const unsigned char* image, int w, int h)
+{
+  //3 bytes per pixel used for both input and output.
+  int inputChannels = 3;
+  int outputChannels = 3;
+
+  //bytes 0-13
+  bmp.push_back(&#39;B&#39;); bmp.push_back(&#39;M&#39;); //0: bfType
+  bmp.push_back(0); bmp.push_back(0); 
+  bmp.push_back(0); bmp.push_back(0); 
+  bmp.push_back(0); bmp.push_back(0); //6: bfReserved1
+  bmp.push_back(0); bmp.push_back(0); //8: bfReserved2
+  bmp.push_back(54 % 256); 
+  bmp.push_back(54 / 256); 
+  bmp.push_back(0); bmp.push_back(0); 
+
+  //bytes 14-53
+  bmp.push_back(40); bmp.push_back(0); 
+  bmp.push_back(0); bmp.push_back(0);  //14: biSize
+  bmp.push_back(w % 256); 
+  bmp.push_back(w / 256); 
+  bmp.push_back(0); bmp.push_back(0); //18: biWidth
+  bmp.push_back(h % 256); 
+  bmp.push_back(h / 256); 
+  bmp.push_back(0); bmp.push_back(0); //22: biHeight
+  bmp.push_back(1); bmp.push_back(0); //26: biPlanes
+  bmp.push_back(outputChannels * 8); 
+  bmp.push_back(0); //28: biBitCount
+  bmp.push_back(0); bmp.push_back(0); 
+  bmp.push_back(0); bmp.push_back(0);  //30: biCompression
+  bmp.push_back(0); bmp.push_back(0); 
+  bmp.push_back(0); bmp.push_back(0);  //34: biSizeImage
+  bmp.push_back(0); bmp.push_back(0); 
+  bmp.push_back(0); bmp.push_back(0);  //38: biXPelsPerMeter
+  bmp.push_back(0); bmp.push_back(0); 
+  bmp.push_back(0); bmp.push_back(0);  //42: biYPelsPerMeter
+  bmp.push_back(0); bmp.push_back(0); 
+  bmp.push_back(0); bmp.push_back(0);  //46: biClrUsed
+  bmp.push_back(0); bmp.push_back(0); 
+  bmp.push_back(0); bmp.push_back(0);  //50: biClrImportant
+
+  int imagerowbytes = outputChannels * w;
+  //must be multiple of 4
+  imagerowbytes = imagerowbytes % 4 == 0 ? imagerowbytes : 
+            imagerowbytes + (4 - imagerowbytes % 4); 
+
+  for(int y = h - 1; y &gt;= 0; y--) 
+  {
+    int c = 0;
+    for(int x = 0; x &lt; imagerowbytes; x++)
+    {
+      if(x &lt; w * outputChannels)
+      {
+        int inc = c;
+        //Convert RGB(A) into BGR(A)
+        if(c == 0) inc = 2;
+        else if(c == 2) inc = 0;
+        bmp.push_back(image[inputChannels 
+            * (w * y + x / outputChannels) + inc]);
+      }
+      else bmp.push_back(0);
+      c++;
+      if(c &gt;= outputChannels) c = 0;
+    }
+  }
+
+  // Fill in the size
+  bmp[2] = bmp.size() % 256;
+  bmp[3] = (bmp.size() / 256) % 256;
+  bmp[4] = (bmp.size() / 65536) % 256;
+  bmp[5] = bmp.size() / 16777216;
+}
+
+
+bool do_convert(
+  std::vector&lt;unsigned char&gt; &amp; input_data, 
+  std::vector&lt;unsigned char&gt; &amp; bmp)
+{
+  std::vector&lt;unsigned char&gt; image; //the raw pixels
+  unsigned width, height;
+  unsigned error = lodepng::decode(image, width, 
+    height, input_data, LCT_RGB, 8);
+  if(error) {
+    std::cout &lt;&lt; &quot;error &quot; &lt;&lt; error &lt;&lt; &quot;: &quot; 
+              &lt;&lt; lodepng_error_text(error) 
+              &lt;&lt; std::endl;
+    return false;
+  }
+  encodeBMP(bmp, &amp;image[0], width, height);
+  return true;
+}
+</code></pre>
+<p>Sorry... that listing was long, but it&#39;s important to see what&#39;s actually going on! Let&#39;s get to work bridging all this code to JavaScript.</p>
+<h2 id="passing-buffers-to-an-addon">Passing buffers to an addon</h2>
+<p>Our first task is to create the <code>saveBMP</code> addon function, which accepts a filename (destination BMP) along with the png data. The png image data is actually read when we are in JavaScript, so it&#39;s passed in as a Node.js <code>Buffer</code>. The first rule to recognize is that <code>Buffer</code> is unknown to V8, it&#39;s a Node.js construct. We&#39;ll use NAN to access the buffer itself (and later create new <code>Buffer</code> objects). Whenever <code>Buffer</code> objects are passed to C++ addons, it is necessary to specify it&#39;s length as an added parameter, as it&#39;s difficult to ascertain the actual data length of a <code>Buffer</code> from C++.</p>
+<p>Let&#39;s set up the first function call in NAN:</p>
+<pre><code class="lang-cpp">
+NAN_METHOD(SaveBMP) {
+    v8::String::Utf8Value val(info[0]-&gt;ToString());
+    std::string outfile (*val);
+
+    ....
+}
+
+NAN_MODULE_INIT(Init) {
+   Nan::Set(target, 
+    New&lt;String&gt;(&quot;saveBMP&quot;).ToLocalChecked(),
+    GetFunction(New&lt;FunctionTemplate&gt;(SaveBMP))
+      .ToLocalChecked());
+}
+
+NODE_MODULE(basic_nan, Init)
+</code></pre>
+<p>In <code>SaveBMP</code>, the first step we do is a simple extraction of the output filename. Next, we must extract the binary data (which will be represented by <code>unsigned char</code> data).</p>
+<pre><code class="lang-cpp">unsigned char* buffer = 
+  (unsigned char*) node::Buffer::Data(info[1]-&gt;ToObject());
+
+unsigned int size = info[2]-&gt;Uint32Value();
+</code></pre>
+<p>Notice just how easy this is... Node.js provides a static <code>Data</code> method on the <code>Buffer</code> class that accepts a standard <code>v8::Object</code> handle and returns an <code>unsigned char</code> pointer to the underlying data. This pointer <strong>does NOT</strong> point to data managed by V8 recall - it&#39;s on the normal C++ heap and can be worked with as such. We also extract the size from the third argument to the addon function.</p>
+<p>Often in C++ we prefer to deal with STL containers rather than raw memory arrays, so we can easily create a <code>vector</code> from this pointer - which we need to do in order to call <code>do_convert</code>. Below is the full code listing - which converts the buffer&#39;s data pointer to a vector, calls <code>do_convert</code> which works it&#39;s magic to fill in bmp data into the vector we give it, and finally saves it to the desired output file (using a lodepng utility call - <code>save_file</code>).</p>
+<pre><code class="lang-cpp">NAN_METHOD(SaveBMP) {
+  v8::String::Utf8Value val(info[0]-&gt;ToString());
+  std::string outfile (*val);
+
+  // Convert the Node.js Buffer into a C++ Vector
+  unsigned char*buffer = 
+    (unsigned char*) node::Buffer::Data(info[1]-&gt;ToObject());
+
+  unsigned int size = info[2]-&gt;Uint32Value();
+  std::vector&lt;unsigned char&gt; png_data(buffer, buffer + size);
+
+  // Convert to bmp, stored in another vector.    
+  std::vector&lt;unsigned char&gt; bmp; 
+  if ( do_convert(png_data, bmp)) {
+      info.GetReturnValue().Set(Nan::New(false)); 
+  }
+  else {
+      lodepng::save_file(bmp, outfile);    
+      info.GetReturnValue().Set(Nan::New(true));
+  }
+}
+</code></pre>
+<p>Run this program by doing an <code>npm install</code> and then an <code>npm start</code> and you&#39;ll see a <code>sample.bmp</code> generated that looks eerily similar to <code>sample.png</code>, just a whole lot bigger (bmp compression is far less efficient than png).</p>
+<h2 id="returning-buffers-from-addon">Returning buffers from addon</h2>
+<p>This addon would be a lot more flexible if we simply returned the bitmap image data, rather than needing to save it to a file while within C++. To do this, we must learn how to return <code>Buffer</code> objects. This concept, on the surface, seems easy enough - you can look at examples on NAN&#39;s website to see new <code>Buffer</code>s being created in C++ and returned to JavaScript. Upon closer look though, there are some issues we must be careful with, which we&#39;ll tackle here.</p>
+<p>Let&#39;s create a new addon entry point - <code>getBMP</code> - which would be called from JavaScript like so:</p>
+<pre><code class="lang-javascript">...
+var png_buffer = fs.readFileSync(png_file);
+
+bmp_buffer = png2bmp.getBMP(png_buffer, png_buffer.length);
+fs.writeFileSync(bmp_file, bmp_buffer);
+</code></pre>
+<p>In the original C++ function, we called <code>do_convert</code> which put the bitmap data into a <code>vector&lt;unsigned int&gt;</code> which we wrote to a file. Now we must <em>return</em> that data, by constructing a new <code>Buffer</code> object. NAN&#39;s <code>NewBuffer</code> call aptly does the trick here - let&#39;s look at a first draft of the addon function:</p>
+<pre><code class="lang-cpp">
+void buffer_delete_callback(char* data, void* hint) {
+    free(data);
+}
+
+NAN_METHOD(GetBMP) {
+  unsigned char*buffer = 
+    (unsigned char*) node::Buffer::Data(info[0]-&gt;ToObject());
+
+  unsigned int size = info[1]-&gt;Uint32Value();
+
+  std::vector&lt;unsigned char&gt; png_data(buffer, buffer + size);
+  std::vector&lt;unsigned char&gt; bmp = vector&lt;unsigned char&gt;();
+
+  if ( do_convert(png_data, bmp)) {
+      info.GetReturnValue().Set(
+          NewBuffer((char *)bmp.data(), 
+            bmp.size(), buffer_delete_callback, 0)
+            .ToLocalChecked());
+    }
+}
+</code></pre>
+<p>The code example above follows what most tutorials online advocate. We call <code>NewBuffer</code> with a char * (which we grab from the <code>bmp</code> vector using the <code>data</code> method), the size of the amount of memory we are creating the buffer out of, and then 2 additional parameters that might raise your curiosity. The 3rd parameter to <code>NewBuffer</code> is a callback - which ends up being called when the <code>Buffer</code> you are creating gets garbage collected by V8. Recall, <code>Buffer</code>s are JavaScript objects, whose data is stored outside V8 - but the object itself is under V8&#39;s control. From this perspective, it should make sense that a callback would be handy - when V8 destroys the buffer, we need some way of freeing up the data we have created - which is passed into the callback as it&#39;s first parameter. The signature of the callback is defined by NAN - <code>Nan::FreeCallback()</code>. The seconds parameter is a hint to aid in deallocation, we can use it however we want. It will be helpful soon, but for now we just pass null (0).</p>
+<p>So - <em>here is the problem</em> with this code: The data contained in the buffer we return is likely deleted before our JavaScript gets to use it. Why? If you understand C++ well, you likely already see the problem: the <code>bmp</code> vector is going to go out of scope as our <code>GetBMP</code> function returns. C++ vector semantics hold that when the vector goes out of scope, the vector&#39;s destructor will delete all data within the vector - in this case, our bmp data! This is a huge problem, since the <code>Buffer</code> we send back to JavaScript will have it&#39;s data deleted out from under it. You might get away with this (race conditions are fun right?), but it wil eventually cause your program to crash.</p>
+<p>How do we get around this? One method is to create a <code>Buffer</code> containing a <em>copy</em> of the <code>bmp</code> vector&#39;s data. We could do this like so:</p>
+<pre><code class="lang-cpp">if ( do_convert(png_data, bmp)) {
+        info.GetReturnValue().Set(
+            CopyBuffer(
+              (char *)bmp.data(), 
+              bmp.size()).ToLocalChecked());
+}
+</code></pre>
+<p>This indeed is safe, but it involves creating a copy of the data - slow and memory wasting... One way to avoid this whole mess is not to use a vector, and store the bitmap data in a dynamically allocated <code>char *</code> array - however that makes the bitmap conversion code a lot more cumbersome. Thankfully, the answer to this problem, which allows us to still use vectors, is suggested by the the <code>Nan::FreeCallback</code> call signature - namely the <code>hint</code> parameter. Since our problem is that the vector containing bitmap data goes out of scope, we can instead <em>dynamically</em> allocate the vector itself, and pass it into the free callback, where it can be properly deleted when the <code>Buffer</code> has been garbage collected. Below is the completed solution - take careful note now that we are utilizing the <code>hint</code> parameter in our callback, and that we are using a dynamically allocated (heap) vector instead of a stack variable.</p>
+<pre><code class="lang-cpp">void buffer_delete_callback(char* data, void* the_vector) {
+  delete reinterpret_cast&lt;vector&lt;unsigned char&gt; *&gt; (the_vector);
+}
+
+NAN_METHOD(GetBMP) {
+
+  unsigned char*buffer = 
+    (unsigned char*) node::Buffer::Data(info[0]-&gt;ToObject());
+  unsigned int size = info[1]-&gt;Uint32Value();
+
+  std::vector&lt;unsigned char&gt; png_data(buffer, buffer + size);
+
+  // allocate the vector on the heap because we 
+  // are building a buffer out of it&#39;s data to 
+  // return to Node - and don&#39;t want to allow
+  // it to go out of scope until the buffer 
+  // does (see buffer_delete_callback).
+
+  std::vector&lt;unsigned char&gt; * bmp = new vector&lt;unsigned char&gt;();
+
+  if ( do_convert(png_data, *bmp)) {
+      info.GetReturnValue().Set(
+          NewBuffer((char *)bmp-&gt;data(), 
+            bmp-&gt;size(), buffer_delete_callback, bmp)
+            .ToLocalChecked());
+  }
+}
+</code></pre>
+<p>When you run the program, JavaScript will now safely be able to operate on the returned <code>Buffer</code> without needing to worry about <code>vector</code> deleting the memory.</p>
+<h2 id="buffers-as-a-solution-to-the-worker-thread-copying-problem">Buffers as a solution to the worker thread copying problem</h2>
+<p>Reading the segment above, you might recall a discussion in Chapter 4 regarding V8 memory and worker threads. We had a significant issue when using asynchronous addons, in that C++ threads created to do the asynchronous work could <em>never</em> access V8 data directly. There was no real solution to this problem, other than creating a copy of the data in C++ heap space. For lots of addons, this if fine - however as was suggested at the time, when moving large amounts of data between JavaScript and C++ this is a real issue. Now we have a glimpse at a possible solution - allocating data as <code>Buffer</code> objects!</p>
+<p>Let&#39;s develop an asynchronous version of the png to bitmap converter. We&#39;ll perform the actual conversion in a C++ worker thread, using <code>Nan::AsyncWorker</code>. Through the use of <code>Buffer</code> objects however, we will be no need to create a copy of the png data - we will only need to hold a pointer to the underlying data such that our worker thread can access it. Likewise, the data produced by the worker thread (the <code>bmp</code> vector can be used to create a new <code>Buffer</code> without copying data, as shown above. Since we&#39;ve worked with <code>AsyncWorker</code> a lot already in this book, I&#39;ll simply show you the code below - it&#39;s pretty straightforward:</p>
+<pre><code class="lang-cpp"> class PngToBmpWorker : public AsyncWorker {
+    public:
+    PngToBmpWorker(Callback * callback, 
+        v8::Local&lt;v8::Object&gt; &amp;pngBuffer, int size) 
+        : AsyncWorker(callback) {
+        unsigned char*buffer = 
+          (unsigned char*) node::Buffer::Data(pngBuffer);
+
+        std::vector&lt;unsigned char&gt; tmp(
+          buffer, 
+          buffer +  (unsigned int) size);
+
+        png_data = tmp;
+    }
+    void Execute() {
+       bmp = new vector&lt;unsigned char&gt;();
+       do_convert(png_data, *bmp);
+    }
+    void HandleOKCallback () {
+        Local&lt;Object&gt; bmpData = 
+               NewBuffer((char *)bmp-&gt;data(), 
+               bmp-&gt;size(), buffer_delete_callback, 
+               bmp).ToLocalChecked();
+        Local&lt;Value&gt; argv[] = { bmpData };
+        callback-&gt;Call(1, argv);
+    }
+
+    private:
+        vector&lt;unsigned char&gt; png_data;
+        std::vector&lt;unsigned char&gt; * bmp;
+};
+
+NAN_METHOD(GetBMPAsync) {
+    int size = To&lt;int&gt;(info[1]).FromJust();
+    v8::Local&lt;v8::Object&gt; pngBuffer = 
+      info[0]-&gt;ToObject();
+
+    Callback *callback = 
+      new Callback(info[2].As&lt;Function&gt;());
+
+    AsyncQueueWorker(
+      new PngToBmpWorker(callback, pngBuffer , size));
+}
+</code></pre>
+<p>Now we&#39;ve got an asynchronous function to get the bitmap encoded data too - without any copying of data unnecessarily.</p>
+<pre><code class="lang-javascript">png2bmp.getBMPAsync(png_buffer, 
+  png_buffer.length,
+  function(bmp_buffer) {
+    fs.writeFileSync(bmp_file, bmp_buffer);
+});
+</code></pre>
+<p>[1] Converting from png to bmp is <em>not</em> particularly time consuming, it&#39;s probably overkill for an addon - but it&#39;s good for demonstration purposes. If you are looking for a pure JavaScript implementation of image processing (including much more than png to bmp conversion), take a look at JIMP at <a href="">https://www.npmjs.com/package/jimp</a><a href="https://www.npmjs.com/package/jimp">https://www.npmjs.com/package/jimp</a>.</p>
+<p><a href="end.html">Closing</a><br><a href="index.html">Table of Contents</a></p>
+</body></html>

@@ -1,0 +1,320 @@
+<!doctype html><html><head>
+
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/styles/default.min.css">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/highlight.min.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+  <style>
+      .markdown-body {
+          box-sizing: border-box;
+          min-width: 200px;
+          max-width: 980px;
+          margin: 0 auto;
+          padding: 45px;
+      }
+      .highlight {
+        background-color:red;
+        background-color:#f1c40f;
+        padding:1em;
+      }
+  </style>
+<title>C++ and Node.js Integration</title>
+</head><body class='markdown-body'>
+<p><a href="index.html">Table of Contents</a></p>
+<h1 id="chapter-8-publishing-addons">Chapter 8 - Publishing Addons</h1>
+<p>As the final chapter in this book, we&#39;ll take a look at some of the basics of packaging and publishing Node.js addons. While much of the workflow follows the same patterns as publishing normal Node.js modules (JavaScript), there are some particulars - relating to compiling C++ code - that we must be aware of. As a first step, let&#39;s review some of the important aspects of our build tool of choice - <code>node-gyp</code> - and see how to publish these addons. We&#39;ll then take a look at how to ensure our addons compile and install on a wide variety of end-user machines. Finally, we&#39;ll take a look at some of the alternatives to <code>node-gyp</code>.</p>
+<p>The code above in this chapter is available in full in the <code>nodecpp-demo</code> repository at <a href="https://github.com/freezer333/nodecpp-demo">https://github.com/freezer333/nodecpp-demo</a>, under the &quot;Packaging&quot; section.</p>
+<h2 id="review-of-node-gyp-basics">Review of <code>node-gyp</code> basics</h2>
+<p>Throughout this book we&#39;ve built all our addons using <code>node-gyp</code>, which is a Node.js program that wraps the <code>gyp</code> build tool system created by Google. <code>gyp</code> itself (Generate your own project) is geared towards allowing developers to setup projects/dependencies in a platform agnostic way - rather than maintaining project files for Visual Studio (projects) and Linux/OS X toolchains. The <code>node</code> in <code>node-gyp</code> is what builds in the support for setting up projects that output actual Node.js addons.</p>
+<p>If you&#39;ve made it this far, hopefully you&#39;ve built a few (at least!) of the addons described in previous chapters - which means not only have you installed <code>node-gyp</code>, but you&#39;ve also installed the proper dependencies for your platform.</p>
+<ol>
+<li>Python 2.7+, but <strong>not Python 3.x</strong>. <code>node-gyp</code> uses Python for part of it&#39;s build process, but it is not compatible with Python 3 - you must have a 2x version installed on your machine. They can be installed side-by-side, so if you want Python3 too - it&#39;s not a problem.</li>
+<li>Build tools for your platform - if you are on Linux/Mac OX you&#39;ll need <code>make</code> and <code>clang++</code>. On OS X, these are installed when you install XCode. On Windows, you need Visual Studio installed on your system.</li>
+</ol>
+<p>Once you have those setup (and on your path), you can install <code>node-gyp</code> using <code>npm</code>. Be sure to install it globally!</p>
+<pre><code class="lang-bash">$ npm install node-gyp -g
+</code></pre>
+<p>All our addons have a <code>binding.gyp</code> file, and we&#39;ve already seen some rather complex ones. At it&#39;s core, the <code>binding.gyp</code> file simply specifies a target name and a list of C++ source code files to build.</p>
+<pre><code class="lang-javascript">{
+  &quot;targets&quot;: [
+    {
+      &quot;target_name&quot;: &quot;hello_addon&quot;,
+      &quot;sources&quot;: [ &quot;hello.cpp&quot; ]
+    }
+  ]
+}
+</code></pre>
+<p><code>node-gyp</code> can be used to simply create project build files (for the given platform) by issuing <code>node-gyp configure</code>. On Windows, this would create the necessary <code>.vsprojx</code> file for Visual Studio to compile the addon - on OS X or Linux it will create a <code>Makefile</code>. Issuing a <code>node-gyp build</code> will run the compiler and generate the addon. You of course can do both at the same time.</p>
+<pre><code class="lang-bash">$ node-gyp configure build
+</code></pre>
+<p>We&#39;ve been through this before, but what if we want to distribute our addon? We&#39;ll start with a really simple addon - one using no C++ library dependencies, standard (pre C++11) C++, and no platform specific API calls.</p>
+<pre><code class="lang-cpp">#include &lt;node.h&gt;
+
+using namespace v8;
+
+void Method(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+  Isolate* isolate = args.GetIsolate();
+  Local&lt;String&gt;  retval = String::NewFromUtf8(isolate, &quot;hello&quot;);
+  args.GetReturnValue().Set(retval);
+}
+
+void init(Local&lt;Object&gt; exports) {
+  NODE_SET_METHOD(exports, &quot;hello&quot;, Method);
+}
+
+NODE_MODULE(hello_addon, init)
+</code></pre>
+<p>Up until this point in the book, the next step has always been to immediately begin to create a JavaScript source file that started to use the addon. Let&#39;s take a step back however - addons should be <em>reusable</em> and <em>distributable</em> - right? So before writing JavaScript that calls the addon, let&#39;s package the addon up so we can treat it as a <strong>standalone</strong> module. To do that, we need a <code>package.json</code> file of course!</p>
+<p>Let&#39;s create a real simple one:</p>
+<pre><code class="lang-javascript">{
+  &quot;name&quot;: &quot;hello-world-nodecpp&quot;,
+  &quot;version&quot;: &quot;1.0.0&quot;,
+  &quot;main&quot;: &quot;./build/Release/hello_addon&quot;,
+  &quot;gypfile&quot;: true,
+  &quot;author&quot;: &quot;Scott Frees &lt;scott.frees@gmail.com&gt; (http://scottfrees.com/)&quot;,
+  &quot;license&quot;: &quot;ISC&quot;  
+}
+</code></pre>
+<p>Notice the inclusion of <code>gypfile</code> however - this is important - it tells anything consuming the <code>package.json</code> file (such as <code>npm</code>) that there is a build process that must be performed before using the module. Notice also the entry for <code>main</code>, it is pointing <code>npm</code> to the actual location where the addon will be created - which is where we&#39;ve been hardcoding <code>require</code> statements to throughout this book.</p>
+<p>Currently there should be three files in a directory called <code>hello</code>:</p>
+<pre><code>/hello
+ | 
+ |--- hello.cpp
+ |--- binding.gyp
+ |--- package.json
+</code></pre><p>This is all we need to have a standalone module. Let&#39;s now create a new directory (at the same level as <code>/hello</code> called <code>/demo</code> and create a Node.js program that specifies the <code>hello-world-nodecpp</code> module we&#39;ve created as a dependency. Instead of hardcoding filepaths in our JavaScript program, we&#39;ll utilize <code>npm</code>&#39;s ability to use local module dependencies.</p>
+<p>Let&#39;s create our directory and add an <code>index.js</code> and another <code>package.json</code> file for the demo program:</p>
+<pre><code>/hello
+ | 
+ |--- hello.cpp
+ |--- binding.gyp
+ |--- package.json
+/demo
+ |
+ |--- index.js
+ |--- package.json
+</code></pre><p>Inside <code>/demo/package.json</code> we will add a local dependency (supported by <code>npm</code> versions 2+:</p>
+<pre><code class="lang-javascript">{
+  &quot;name&quot;: &quot;demo&quot;,
+  &quot;version&quot;: &quot;1.0.0&quot;,
+  &quot;main&quot;: &quot;index.js,
+  &quot;author&quot;: &quot;Scott Frees &lt;scott.frees@gmail.com&gt; (http://scottfrees.com/)&quot;,
+  &quot;license&quot;: &quot;ISC&quot;, 
+  &quot;dependencies&quot;: {
+    &quot;hello-world-nodecpp&quot;: &quot;file:../hello&quot;
+  }
+}
+</code></pre>
+<p>Here&#39;s how we&#39;d use the module in <code>index.js</code>:</p>
+<pre><code class="lang-javascript">var say = require(&#39;hello-world-nodecpp&#39;);
+console.log( say.hello() );
+</code></pre>
+<p>While within the <code>demo</code> directory, let&#39;s do an <code>npm install</code>. <code>npm</code> will interrogate the <code>package.json</code> file and see the local <code>hello-world-nodecpp</code> dependency. <code>npm</code> will then read <code>/hello/package.json</code> and see that there is a <code>gypfile</code> flag, and build the addon. Note, this process will actually put the addon binary within <code>/demo/node_modules</code> directory. Now that the addon is built and copied into <code>/node_modules</code>, we can run the program with <code>node index.js</code> and we&#39;ll see our addon happily greets us.</p>
+<pre><code class="lang-bash">$ node index.js
+hello
+$
+</code></pre>
+<p>The key takeaway from this segment is the creation of the <code>package.json</code> file which directly points to the addon at it&#39;s entry point. When consuming (<code>require</code>ing) programs declare the addon as a dependency, <code>npm</code> takes care of the rest (executing <code>node-gyp</code>). Our addon can now be required cleanly, without specifying file paths in our JavaScript code.</p>
+<h2 id="publishing-to-npm-">Publishing to <code>npm</code></h2>
+<p>While we used <code>hello-world-nodecpp</code> as a local dependency above, there is nothing stopping us from publishing this addon now to the global <code>npm</code> registry. Let&#39;s go ahead and pollute the registry with yet another hello world module!</p>
+<pre><code class="lang-bash"># From within `/hello`
+$ npm publish
++ hello-world-nodecpp@1.0.0
+</code></pre>
+<p>The <code>npm publish</code> command requires some parameters from you, such as your account with <code>npmjs.org</code> credentials. If youv&#39;e never published anything to <code>npm</code>, then you might have some configuration to do (see <a href="https://docs.npmjs.com/getting-started/publishing-npm-packages">https://docs.npmjs.com/getting-started/publishing-npm-packages</a> for help setting this up). You can head over to <a href="https://www.npmjs.com/package/hello-world-nodecpp">https://www.npmjs.com/package/hello-world-nodecpp</a> to see the published result.</p>
+<p>Now of course, we can change our <code>demo/package.json</code> to link to the npm registry itself.</p>
+<pre><code class="lang-javascript">{
+  &quot;name&quot;: &quot;demo&quot;,
+  &quot;version&quot;: &quot;1.0.0&quot;,
+  &quot;main&quot;: &quot;index.js,
+  &quot;author&quot;: &quot;Scott Frees &lt;scott.frees@gmail.com&gt; (http://scottfrees.com/)&quot;,
+  &quot;license&quot;: &quot;ISC&quot;, 
+  &quot;dependencies&quot;: {
+    &quot;hello-world-nodecpp&quot;: &quot;^1.0.0&quot;
+  }
+}
+</code></pre>
+<p>All the standard version conventions inherent to npm package management apply to addons - there is nothing new to learn. Now anytime anyone links to <code>hello-world-nodecpp</code> the C++ source code will be downloaded to their machines, built with <code>node-gyp</code> and their local C++ toolchain, and be usable as a native binary.</p>
+<h2 id="distributing-addons-that-use-nan">Distributing addons that use NAN</h2>
+<p>Most larger addons will likely make use of NAN to facilitate cross-node-version compatibility, which makes even more sense if you plan on distributing addons. Thankfully, declaring NAN as a dependency is fairly straightforward - we must indicate the dependency in two places - (1) our <code>binding.gyp</code> file so the compiler can use NAN and (2) our <code>package.json</code> file, which will instruct <code>npm</code> to fetch the NAN library on install.</p>
+<p>Here is the C++ addon - a slight variant on the previous hello world example:</p>
+<pre><code class="lang-cpp">#include &lt;nan.h&gt;
+using namespace Nan;
+using namespace v8;
+
+NAN_METHOD(Method) {
+  info.GetReturnValue().Set(
+    New&lt;String&gt;(&quot;nan hello&quot;).ToLocalChecked());
+}
+
+NAN_MODULE_INIT(Init) {
+   Nan::Set(target, 
+    New&lt;String&gt;(&quot;hello&quot;).ToLocalChecked(),
+    GetFunction(New&lt;FunctionTemplate&gt;(Method)).ToLocalChecked());
+}       
+
+NODE_MODULE(hello_nan_addon, Init)
+</code></pre>
+<p>In Chapter 6 we saw how to include NAN in the <code>binding.gyp</code> file - here it is again:</p>
+<pre><code class="lang-javascript">{
+  &quot;targets&quot;: [
+    {
+      &quot;target_name&quot;: &quot;hello_nan_addon&quot;,
+      &quot;sources&quot;: [ &quot;hello_nan.cpp&quot; ], 
+      &quot;include_dirs&quot; : [
+        &quot;&lt;!(node -e \&quot;require(&#39;nan&#39;)\&quot;)&quot;
+      ]
+    }
+  ]
+}
+</code></pre>
+<p>Finally, we add <code>nan</code> to the module&#39;s <code>package.json</code> file:</p>
+<pre><code class="lang-javascript">{
+  &quot;name&quot;: &quot;hello-world-nan-nodecpp&quot;,
+  &quot;version&quot;: &quot;1.0.0&quot;,
+  &quot;main&quot;: &quot;./build/Release/hello_nan_addon&quot;,
+  &quot;gypfile&quot;: true,
+  &quot;author&quot;: &quot;Scott Frees &lt;scott.frees@gmail.com&gt; (http://scottfrees.com/)&quot;,
+  &quot;license&quot;: &quot;ISC&quot;, 
+  &quot;dependencies&quot;: {
+    &quot;nan&quot;: &quot;^2.3.3&quot;
+  }
+}
+</code></pre>
+<p>Instead of further polluting the npm registry, let&#39;s just add a local dependency to our <code>/demo</code> program and utilize this addon also.</p>
+<pre><code class="lang-javascript">{
+  &quot;name&quot;: &quot;demo&quot;,
+  &quot;version&quot;: &quot;1.0.0&quot;,
+  &quot;main&quot;: &quot;index.js&quot;,
+  &quot;author&quot;: &quot;Scott Frees &lt;scott.frees@gmail.com&gt; (http://scottfrees.com/)&quot;,
+  &quot;license&quot;: &quot;ISC&quot;,
+  &quot;dependencies&quot;: {
+    &quot;hello-world-nodecpp&quot;: &quot;^1.0.0&quot;, 
+    &quot;hello-world-nan-nodecpp&quot;: &quot;file:../hellonan&quot;
+  }
+}
+</code></pre>
+<pre><code class="lang-javascript">var say = require(&#39;hello-world-nodecpp&#39;);
+var nansay = require(&#39;hello-world-nan-nodecpp&#39;);
+console.log( say.hello() );
+console.log( nansay.hello() );
+</code></pre>
+<p>From the <code>/demo</code> directory, do another <code>npm install</code> to build the addon, and you are all set:</p>
+<pre><code class="lang-bash"># From within `/demo`
+$ npm install
+.... will build the new addon...
+$ node index.js
+hello
+nan hello
+</code></pre>
+<h2 id="distributing-addons-that-use-c-11">Distributing addons that use C++11</h2>
+<p>So far we&#39;ve used basic C++ in our addons, but at many points in this book we utilized some features of C++ that are part of the C++ 11 (or 14, 17..) standard. The C++11 standard (especially) is common place, however many compilers require special incantations to enable it - which makes configuring <code>node-gyp</code> correctly for each platform pretty critical. Of course, the target machine where your add on is being installed must have a C++ toolchain that supports C++ 11 to make things work, but let&#39;s now look at what else we need to do. While there are undoubtedly many more possible configurations and options, I&#39;ll present the additions to <code>binding.gyp</code> that I&#39;ve found to cover the most common platform configurations.</p>
+<h3 id="c-11-example">C++11 example</h3>
+<p>Let&#39;s start by creating a needlessly complicated <code>Add</code> function that utilizes a <code>lambda</code> and <code>auto</code>. I stress that this is a needlessly complicated way of adding two numbers - but it certainly requires C++11! I&#39;ll also continue to use NAN.</p>
+<pre><code class="lang-cpp">#include &lt;nan.h&gt;
+using namespace Nan;
+
+NAN_METHOD(Add) {
+
+    auto sum = [](int x, int y) { return x + y; };
+
+    int a = To&lt;int&gt;(info[0]).FromJust();
+    int b = To&lt;int&gt;(info[1]).FromJust();
+
+    Local&lt;Number&gt; retval = Nan::New(sum(a, b));
+    info.GetReturnValue().Set(retval);    
+}
+
+NAN_MODULE_INIT(Init) {
+   Nan::Set(target, New&lt;String&gt;(&quot;add&quot;).ToLocalChecked(),
+        GetFunction(New&lt;FunctionTemplate&gt;(Add)).ToLocalChecked());
+}       
+
+NODE_MODULE(cpp11, Init)
+</code></pre>
+<p>Assuming we also create a standard <code>binding.gyp</code> and <code>package.json</code> file for this addon, let&#39;s add this to <code>/demo</code> and try to install. If you are compiling on OS X or Linux with the latest compilers, it&#39;s fairly likely that this code will indeed compile just fine. If you are using versions of Xcode or clang/g++ that are a bit old however, it&#39;s likely you will need to take some additional steps.</p>
+<h3 id="building-on-linux">Building on Linux</h3>
+<p>For backwards compatibility, most versions of g++ and clang++ require c++11 to be specifically targeted. Generally I simply add a general entry under <code>cflags</code> in <code>binding.gyp</code> to ensure the standard is used. You could elect to put this in a condition specifically targeting Linux, however since it doesn&#39;t do any harm on any other platforms, I recommend simply adding it directly</p>
+<pre><code class="lang-cpp">&quot;cflags&quot;: [&quot;-std=c++11&quot;],
+</code></pre>
+<p>You of course can add any number of additional flags here as well, it is an array.</p>
+<h3 id="building-on-os-x">Building on OS X</h3>
+<p>For users running OS X, you won&#39;t be able to count on them having the latest version of Xcode installed. For earlier versions of Xcode, C++ 11 and the standard library must be specifically included. <code>gyp</code> allows us to add options specific for OS X as a conditional - simply include the following to allow a wide range of Xcode versions to successfully compiler your addon:</p>
+<pre><code class="lang-javascript">&quot;conditions&quot;: [
+  [ &#39;OS==&quot;mac&quot;&#39;, {
+       &quot;xcode_settings&quot;: {
+         &#39;OTHER_CPLUSPLUSFLAGS&#39; : [&#39;-std=c++11&#39;,&#39;-stdlib=libc++&#39;],
+         &#39;OTHER_LDFLAGS&#39;: [&#39;-stdlib=libc++&#39;],
+         &#39;MACOSX_DEPLOYMENT_TARGET&#39;: &#39;10.7&#39; }
+        }
+  ]
+]
+</code></pre>
+<h3 id="building-on-windows">Building on Windows</h3>
+<p>Happily, there isn&#39;t much for us to do for Windows. While we can certainly pass Visual Studio compiler flags in through <code>gyp</code> (<code>msvs_settings</code>), each version of Visual Studio will automatically apply the latest C++ features that it supports. Of course, if the version of Visual Studio installed on the target machine does not support the specific C++ feature you are using in your addon, there is little that <code>gyp</code> can do to help.</p>
+<p><strong>Rule of thumb</strong>: When developing addons, realize they will be <em>compiled</em> on the end-users&#39; machine - needless use of advance language features might be fun, but it can haunt you!</p>
+<h2 id="including-multiple-c-files">Including multiple C++ files</h2>
+<p>Most of the addons in this book have been contained within one single C++ file. Many addons will be built from potentially dozens of C++ files, and this is fully <em>supported</em> by <code>node-gyp</code>, however be warned - if you have a complex build/dependency setup you may find <code>node-gyp</code> a bit uncooperative, it supports simple builds well, but can get tedious and difficult quickly. If you have a complex C++ build setup, you are likely using <code>cmake</code> or similar, and might find <code>node-gyp</code> frustrating - see the section below on <code>cmake-js</code> for some refuge.</p>
+<p>Let&#39;s create a simple addon that adds two numbers passed from Node.js, but does this by utilizing a <code>sum</code> function that is contained in a separate C++ module (cpp file and header). Again - needlessly complicated, for demonstration purposes:</p>
+<pre><code class="lang-cpp">// contents of add.h
+int sum(int, int);
+</code></pre>
+<pre><code class="lang-cpp">// contents of add.cpp
+#include &quot;add.h&quot;
+
+int sum(int x, int y ) {
+    return x+y;
+}
+</code></pre>
+<pre><code class="lang-cpp">// contents of addlib.cpp - entry point for addon
+#include &lt;nan.h&gt;
+#include &quot;add.h&quot;
+using namespace Nan;
+using namespace v8;
+
+NAN_METHOD(Add) {
+    int a = To&lt;int&gt;(info[0]).FromJust();
+    int b = To&lt;int&gt;(info[1]).FromJust();
+
+    Local&lt;Number&gt; retval = Nan::New(sum(a, b));
+    info.GetReturnValue().Set(retval);    
+}
+
+NAN_MODULE_INIT(Init) {
+   Nan::Set(target, New&lt;String&gt;(&quot;add&quot;).ToLocalChecked(),
+        GetFunction(New&lt;FunctionTemplate&gt;(Add)).ToLocalChecked());
+}       
+
+NODE_MODULE(cpp11, Init)
+</code></pre>
+<p>With additional source code file, we just need to add the files to the <code>sources</code> array in the <code>binding.gyp</code> file:</p>
+<pre><code class="lang-javascript">{
+  &quot;targets&quot;: [
+    {
+      &quot;target_name&quot;: &quot;addlib&quot;,
+      &quot;sources&quot;: [ &quot;add.cpp&quot;, &quot;addlib.cpp&quot; ], 
+      &quot;include_dirs&quot; : [
+        &quot;&lt;!(node -e \&quot;require(&#39;nan&#39;)\&quot;)&quot;
+      ]
+    }
+  ]
+}
+</code></pre>
+<p>When publishing addons, all C++ source code that is needed to compile the addon must be published. In the example above, this happens automatically - however if your addon has dependencies outside the working directory you can run into trouble. It&#39;s wise to brush up on how <code>npm</code> determines which files are part of the published package, which is described in <code>npm</code>&#39;s documentation here: <a href="https://docs.npmjs.com/misc/developers#keeping-files-out-of-your-package">https://docs.npmjs.com/misc/developers#keeping-files-out-of-your-package</a>.</p>
+<h2 id="pre-compiled-addons">Pre-compiled Addons</h2>
+<p>It&#39;s important to note that everything above is predicated on the fact that you intend to have your users &quot;compile&quot; the addon when they do an <code>npm install</code>. In most cases, this makes sense - Node.js is usually used in programs that are not meant to <em>directly</em> run on end users machines - in most cases your addon will be run on a machine that you can assume a developer has access to and can install the prerequisite toolchain on. Node.js is expanding though, and especially with the advent of desktop applications being developed with NW and electron, you could very well end up seeing your addon being used on &quot;grandma&#39;s&quot; computer too - and it&#39;s unlikely grandma has a C++ toolchain installed!</p>
+<p>If you want to publish addons in pre-built form you must consider usage on Windows, Linux, and OS X. While you can role your own solution to this, there exist some helpful tools to simplify the process. <a href="https://github.com/mapbox/node-pre-gyp"><code>node-pre-gyp</code></a> is one such tool, which can be installed on the developer&#39;s machine and facilitates building and installing binary dependencies. While out of the scope of this book, it&#39;s worth taking a look at if you plan to create addons that may have non-technical users.</p>
+<h2 id="node-gyp-alternative-cmake-js">Node-gyp Alternative: cmake-js</h2>
+<p><code>node-gyp</code> is built on Google&#39;s <code>gyp</code> tool. It hasn&#39;t always been the method of choice when creating addons, in earlier (pre v0.8) versions of Node a program called <code>node-waf</code> was used, and required different build files. While there is no reason to believe <code>node-gyp</code> is going away soon (as of mid-2016), there are no guarantees in life. Furthermore, <code>gyp</code> leaves a lot to be desired for complex C++ builds - not the least of which is documentation (<code>gyp</code> has documentation, but it&#39;s nowhere near as comprehensive as other C++ build tools). For these reasons, seasoned C++ developers wishing to support complex build systems may prefer alternatives to <code>node-gyp</code>.</p>
+<p>The leading alternative is <code>cmake-js</code>. As it&#39;s name suggests, it uses the immensely popular and ubiquitous <code>CMake</code> build tool. The advantage of <code>cmake-js</code> is that rather than using <code>binding.gyp</code>, it uses <code>CMake</code> configuration files and is likely compatible with existing C++ developer workflows. <code>CMake</code> has it&#39;s own modules system, extremely comprehensive documentation, and is not dependent on Python. Perhaps the biggest advantage is that it makes including the Boost C++ library as a dependency to your addon fairly straightforward - something that is <em>extremely</em> difficult to pull off using <code>node-gyp</code>.</p>
+<p>CMake isn&#39;t the focus of this book, but if you are an experienced CMake user or C++ developer it is likely a really good idea to invest some time learning more about CMake and <code>cmake-js</code>. It&#39;s a solid alternative to <code>node-gyp</code>.</p>
+<p>Information about the tools can be found at the following links:</p>
+<ol>
+<li><a href="https://www.npmjs.com/package/cmake-js"><code>cmake-js</code> on npm</a>: <a href="https://www.npmjs.com/package/cmake-js">https://www.npmjs.com/package/cmake-js</a></li>
+<li><a href="https://github.com/cmake-js/cmake-js/wiki"><code>cmake-js</code>&#39;s wiki</a>: <a href="https://github.com/cmake-js/cmake-js/wiki">https://github.com/cmake-js/cmake-js/wiki</a> Contains tutorials for building addons with a variety of dependencies and targets (NW.js, Qt Creator)</li>
+<li><a href="https://www.npmjs.com/package/boost-lib"><code>boost-lib</code> on npm</a>: <a href="https://www.npmjs.com/package/boost-lib">https://www.npmjs.com/package/boost-lib</a> Utility for adding Boost to your Node.js C++ addons.</li>
+</ol>
+<p>There are many more resources online as well. Be sure to check out Appendix A as well, were you&#39;ll see how to use <code>node-gyp</code> to build a variety of different target types such as executables and shared libraries.</p>
+<p><a href="appA.html">Appendix A</a><br><a href="index.html">Table of Contents</a></p>
+</body></html>

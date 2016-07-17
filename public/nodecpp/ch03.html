@@ -1,0 +1,607 @@
+<!doctype html><html><head>
+
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/styles/default.min.css">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/highlight.min.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+  <style>
+      .markdown-body {
+          box-sizing: border-box;
+          min-width: 200px;
+          max-width: 980px;
+          margin: 0 auto;
+          padding: 45px;
+      }
+      .highlight {
+        background-color:red;
+        background-color:#f1c40f;
+        padding:1em;
+      }
+  </style>
+<title>C++ and Node.js Integration</title>
+</head><body class='markdown-body'>
+<p><a href="index.html">Table of Contents</a></p>
+<h1 id="chapter-3-basic-integration-patterns">Chapter 3 - Basic Integration Patterns</h1>
+<p>In the last chapter we did a superficial overview of how to use the V8 API to build Node.js C++ addons. While Chapter 2 is designed to be &quot;reference-like&quot;, it doesn&#39;t provide much context to addon development - that&#39;s what this Chapter is for! In this chapter, we&#39;ll present the first (of a few) example Node.js addons - using C++ to calculate some simple statistics about rainfall in a particular region. The example is designed to have just enough depth to show you the patterns and concepts involved when building an addon - but not so much depth as to get us bogged down in C++ rather than the integration of C++. The aim is to take what we&#39;ve learned in Chapters 1 and 2 and begin to <em>apply</em> it to a more concrete example. The main concepts presented in this chapter include exchanging data (including objects and arrays) between JavaScript and Node.js. Chapter 4 and 5 will enhance these examples to use other common integration patterns such as object wrapping and asynchronous processing.</p>
+<h2 id="node-versions">Node Versions</h2>
+<p>It&#39;s worth a quick reminder at this point (since we&#39;re going to be presenting a lot of code) that the V8 API, along with Node.js in general, does undergo changes. This book is compatible with version 0.12, 4.x, and 5.x of Node.js and the V8 API versions that are packaged with them. If you are still using version 0.10 (at time of this writing, some hosting platforms like Microsoft Azure still default to this), the example code presented will not work!</p>
+<p>If you are struggling with keeping track of Node.js versions, it&#39;s highly recommended to use a tool such as <code>nvm</code> (Node.js Version Manager) - which allows you to install and flip between any version of Node.js. Using such a tool will greatly improve your ability to stay on top of API inconsistencies. You can find <code>nvm</code> for Linux and Mac OS X at <a href="https://github.com/creationix/nvm">https://github.com/creationix/nvm</a>. For Microsoft Windows, there are few different distributions, one of which is <a href="https://github.com/coreybutler/nvm-windows">https://github.com/coreybutler/nvm-windows</a>.</p>
+<p>It&#39;s important to note that while everything presented in the next few chapters uses the V8 API directly, it is also possible to shield yourself from API changes using <em>Native Abstractions for Node</em> - <code>NAN</code>. <code>NAN</code> is the subject of Chapter 6.</p>
+<h2 id="integration-pattern-data-transferring">Integration Pattern: Data transferring</h2>
+<p>The most straightforward integration pattern involves passing data between JavaScript and C++ as simple copies. For primitives, this is really the most obvious (and only) alternative, however we&#39;ll also use this copying mechanism for objects and arrays. In particular, the pattern presented here does not share class structure between JavaScript and C++, and we are specifically not using V8 class wrapping strategies.</p>
+<p>Our integrations will follow a simple three step process when invoked from JavaScript:</p>
+<ol>
+<li>The C++ addon code will transfer JavaScript/V8 data into native C++ data structures (classes, STL containers, etc.).</li>
+<li>The C++ addon will perform the necessary calculations/processing on the data and store it&#39;s results in native C++ data structures</li>
+<li>Before returning, the C++ addon will transfer the results held in the native C++ data structures into the appropriate JavaScript/V8 data structures.</li>
+</ol>
+<p>The main reason for using this approach is simplicity. For one, the V8 API impact on data structures in C++ (objects, arrays, etc) will minimized. Using this approach, any existing C++ code can be used without modification, which is an enormous advantage. In addition, there will be a complete decoupling of the JavaScript and C++ code - held together by the data &quot;transfer&quot; code responsible for steps 1 and 3.</p>
+<p>From an organization standpoint, this simplicity also allows us to completely separate the &quot;transfer&quot; code from the core C++ logic we are implementing. As you might have guessed from Chapters 1 and 2, the transfer logic won&#39;t be the &quot;cleanest&quot; looking code - the V8 API is cumbersome. In the author&#39;s experience, keeping the cumbersome V8 API integration code isolated from core C++ business logic is a huge win.</p>
+<p>There are some downsides to the &quot;transfer&quot; approach. One is that it does indeed require you write the transfer boilerplate logic - nothing is done automatically for us. While certainly a negative, as you&#39;ll see when we look at other strategies later in this book, there really isn&#39;t much avoiding this logic - the complexity is simply inherent in the V8 API itself. Using techniques such as ObjectWrap and Buffers still require lots of &quot;boilerplate&quot; as well. The second downside is performance - copying data takes time. As discussed a bit in Chapter 2, since data held in V8 is fundamentally different than normal C++ data, avoiding this penalty is much more difficult than it might initially seem. We&#39;ll discuss this issue a bit more at the end of the chapter, but for now know that under normal circumstances, this performance penalty is often not significant when building real-world addons.</p>
+<h2 id="rainfall-data-example">Rainfall Data Example</h2>
+<p>Over the course of this chapter we will be constructing an addon that can accept rainfall data from JavaScript code (i.e. amount of rainfall over periods of time at given locations). The JavaScript program will send an object containing rain fall sample data to C++ for processing. The sample data will contain a list of <code>locations</code>, marked by their latitude and longitude. Each <code>location</code> also has a list of <code>samples</code> containing the date when the measurement was taken and the amount of rainfall in cm. Below is an example.</p>
+<pre><code class="lang-javascript">{
+  &quot;locations&quot; : [
+    {
+      &quot;latitude&quot; : &quot;40.71&quot;,
+      &quot;longitude&quot; : &quot;-74.01&quot;,
+      &quot;samples&quot; : [
+          {
+             &quot;date&quot; : &quot;2014-06-07&quot;,
+             &quot;rainfall&quot; : &quot;2&quot;
+          },
+          {
+             &quot;date&quot; : &quot;2014-08-12&quot;,
+             &quot;rainfall&quot; : &quot;0.5&quot;
+          },
+          {
+             &quot;date&quot; : &quot;2014-09-29&quot;,
+             &quot;rainfall&quot; : &quot;1.25&quot;
+          }
+       ]
+    },
+    {
+      &quot;latitude&quot; : &quot;42.35&quot;,
+      &quot;longitude&quot; : &quot;-71.06&quot;,
+      &quot;samples&quot; : [
+          {
+             &quot;date&quot; : &quot;2014-03-03&quot;,
+             &quot;rainfall&quot; : &quot;1.75&quot;
+          },
+          {
+             &quot;date&quot; : &quot;2014-05-16&quot;,
+             &quot;rainfall&quot; : &quot;0.25&quot;
+          },
+          {
+             &quot;date&quot; : &quot;2014-03-18&quot;,
+             &quot;rainfall&quot; : &quot;2.25&quot;
+          }
+       ]
+    }
+  ]
+}
+</code></pre>
+<p>All of the code above, and in the rest of this chapter is available in full in the <code>nodecpp-demo</code> repository at <a href="https://github.com/freezer333/nodecpp-demo">https://github.com/freezer333/nodecpp-demo</a>, under the &quot;Rainfall&quot; section.</p>
+<p>The JavaScript code will call a C++ addon to calculate average and median rainfall for each location. Initially, we&#39;ll just deal with one location at a time, but we&#39;ll gradually extend the example to cover lists (arrays) and the return of more complex data structures.</p>
+<p><em>Please note, average/median is not exactly a &quot;heavy compute&quot; task - this is just for demonstration purposes. The reader should always keep in mind that there should be a clear reason for developing a C++ addon rather than just staying in JavaScript. Dropping into C++ for relatively short calculations (such as this) <strong>is not</strong> going to yield performance over JavaScript because of the cost of integration. Addons make the most sense when (1) there are very heavy computation tasks being performed (minutes, not seconds) or (2) when an existing implementation in C/C++ already exists and must be leveraged.</em></p>
+<h3 id="organizing-the-source-code">Organizing the source code</h3>
+<p>All examples in this book will follow a straight forward file/folder layout - at the top level of the addon directory we&#39;ll place all JavaScript code. A subdirectory titles <code>cpp</code> will contain our C++ addon code along with our <code>binding.gyp</code> file that controls the build process. The build process will create several artifacts (platform specific), but the resulting addon will always be placed in a child directory <code>Debug</code> or <code>Release</code>.</p>
+<pre><code>- /addon_folder
+  - all JavaScript source code files
+  - /cpp 
+    - binding.js 
+    - all c++ source code files
+    - /build
+      - build artifacts
+      - /Debug
+      - /Release
+</code></pre><p>JavaScript code running at the top level will be able to include the created addon by issuing a <code>require(/cpp/build/Release/addon_name)</code>, where <code>addon_name</code> will be <code>rainfall</code> for our examples in this chapter. While this folder structure is sufficient for examples, note that later in the book (Chapter 8) we&#39;ll examine how to organize addons so they can easily be redistributed through <code>npm</code>.</p>
+<h3 id="rainfall-c-data-models">Rainfall C++ data models</h3>
+<p>We&#39;re going to start addon development from a <em>bottom up</em> viewpoint - building out the C++ logic first. At the core of the C++ logic is two classes that model the domain. The first, <code>sample</code>, will represent a distinct rainfall data sample, consisting of the date and the amount of rainfall. For now, we&#39;ll model <code>date</code> with a simple string, but we could improve this using V8&#39;s actual <code>Data</code> object as well. The second class represents a given location. <code>location</code> contains doubles describing latitude and longitude along with a list of <code>sample</code> objects. The code below would be placed in <code>/cpp/rainfall.h</code>.</p>
+<pre><code class="lang-cpp">class sample {
+public:
+  sample (); // in rainfall.cc
+  sample (string d, double r) ; // in rainfall.cc
+  string date;
+  double rainfall;
+};
+
+class location {
+public:
+  double longitude;
+  double latitude;
+  vector&lt;sample&gt; samples;
+};
+
+// Will return the average (arithmetic mean) rainfall for the give location
+double avg_rainfall(location &amp; loc); // code in rainfall.cc
+</code></pre>
+<p>Note that the code implementing these function and method prototypes will be found in <code>rainfall.cc</code>. This file will be 100% standard C++ - neither <code>rainfall.h</code> and <code>rainfall.cc</code> will contain any V8/Node.js API dependencies at all. We&#39;ll see the implementation shortly.</p>
+<h3 id="thinking-about-javascript">Thinking about JavaScript</h3>
+<p>Given some logic, we must start to think about what will be called accessed from JavaScript. The core logic that we created above is the <code>avg_rainfall</code>, which would return the average rainfall amounts across all samples found in a location. Note however, this function <em>cannot</em> be called directly from JavaScript, because it&#39;s input is a native C++ object. Our addon code will need to expose a <em>similar</em> function to JavaScript, and the use the provided data (likely a JavaScript object representing a location/sample set) to build a true <code>location</code> object. We&#39;d imagine our JavaScript code could look something like this:</p>
+<pre><code class="lang-javascript">var location = {
+    latitude : 40.71, longitude : -74.01,
+       samples : [ 
+          { date : &quot;2016-06-07&quot;, rainfall : 2 },
+          { date : &quot;2016-08-12&quot;, rainfall : 0.5}
+       ] };
+
+var average = addon.avg_rainfall(location);
+</code></pre>
+<h3 id="creating-the-rainfall-addon">Creating the Rainfall Addon</h3>
+<p>As described in Chapter 1, creating the addon requires some standard boilerplate code that enables Node.js to load our module and begin to call functions within it. Our V8 API code will all be placed in a separate C++ file called <code>rainfall_node.cc</code>. This file includes <code>node.h</code> and <code>v8.h</code> headers. Next, it defines an entry point for our addon - achieved by creating a function and registering it via a macro provided by the node/v8 headers.</p>
+<pre><code class="lang-cpp">#include &lt;node.h&gt;
+#include &lt;v8.h&gt;
+#include &quot;rainfall.h&quot; 
+
+using namespace v8;
+
+void init(Handle &lt;Object&gt; exports, Handle&lt;Object&gt; module) {
+ // we&#39;ll register our functions here..
+}
+
+// associates the module name with initialization logic
+NODE_MODULE(rainfall, init)
+</code></pre>
+<p>As described in Chapter 1, inside the <code>init</code> function (we can name it anything, as long as we associate it in the NODE_MODULE macro) we will define which functions are going to be exposed to Node.js when are module is included/required. The wrapper code to do all this gets a little ugly, which is why its great to keep your clean C++ code (the rainfall.h/cc files) separate from all this.</p>
+<p>So the first thing we&#39;ll do is expose the <code>avg_rainfall</code> method from rainfall by creating a new function in <code>rainfall_node.cc</code>.</p>
+<pre><code>void AvgRainfall(
+    const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args){
+
+  Isolate* isolate = args.GetIsolate();
+
+  Local&lt;Number&gt; retval = v8::Number::New(isolate, 0);
+  args.GetReturnValue().Set(retval)
+}
+</code></pre><p>The return value is set at the last line of the function. As currently written, the function always just returns 0 as the average rainfall - we&#39;ll fix that soon...</p>
+<p>Now lets make this function callable from node, by registering it within the <code>init</code> function from earlier.</p>
+<pre><code class="lang-cpp">void init(Handle &lt;Object&gt; exports, Handle&lt;Object&gt; module) {
+  NODE_SET_METHOD(exports, &quot;avg_rainfall&quot;, AvgRainfall);
+}
+</code></pre>
+<p>The init function is called when the module is first loaded in a node application; it is given an export and module object representing the module being constructed and the object that is returned after the <code>require</code> call in JavaScript. The <code>NODE_SET_METHOD</code> call is adding a method called <code>avg_rainfall</code> to the exports, associated with our actual <code>AvgRainfall</code> function from above. From JavaScript, we&#39;ll see a function called &quot;avg_rainfall&quot;, which at this point just returns 0.</p>
+<p>We can now build the addon and try calling the <code>avg_rainfall</code>, even though it will just return 0.</p>
+<h3 id="building-the-c-addon">Building the C++ addon</h3>
+<p>Our <code>binding.gyp</code> file will be placed in the same directory as the C++ code we already have. In this file, we must specify the name of our addon (<code>rainfall</code>), the source code that must be compiled (we can omit headers), and optional build flags and settings. The target name is the addon/module name - <strong>it must match the name you gave in NODE_MODULE macro in the <code>rainfall_node.cc</code> file!</strong>.</p>
+<pre><code class="lang-javascript">{
+  &quot;targets&quot;: [
+    {
+      &quot;target_name&quot;: &quot;rainfall&quot;,
+      &quot;sources&quot;: [ &quot;rainfall.cc&quot; , &quot;rainfall_node.cc&quot; ],
+      &quot;cflags&quot;: [&quot;-Wall&quot;, &quot;-std=c++11&quot;],
+      &quot;conditions&quot;: [ 
+        [ &#39;OS==&quot;mac&quot;&#39;, { 
+            &quot;xcode_settings&quot;: { 
+                &#39;OTHER_CPLUSPLUSFLAGS&#39; : 
+                    [&#39;-std=c++11&#39;,&#39;-stdlib=libc++&#39;], 
+                &#39;OTHER_LDFLAGS&#39;: [&#39;-stdlib=libc++&#39;], 
+                &#39;MACOSX_DEPLOYMENT_TARGET&#39;: &#39;10.7&#39; } 
+            }
+        ] 
+      ] 
+    }
+  ]
+}
+</code></pre>
+<p>You&#39;ll notice this binding file is more complex compared to the one presented in Chapter 1. For one, we&#39;ve included some cflags - which are compiler options that will be passed into whatever compiler is being used during the build. The flags presented force the compiler to report all warnings and to use the C++11 standard. These flags are generic, they work just fine if you are using Linux and clang++. If built on Windows, <code>node-gyp</code> will use Visual Studio, which does not use the <code>-Wall</code> and <code>-std</code> flags - although it automatically uses the C++11 standard. The oddball is the Mac OS X environment - it doesn&#39;t play quite as nicely. The &quot;conditions&quot; group in the binding file above allows us to specify some additional, conditional, flags. In this case, when the compiler is running on Mac OS X, we are specifying build flags specifically designed for Xcode. These are unfortunately required (at least at this time) in order to utilize C++11 and above.</p>
+<p>With this is place, you can build your module by moving your terminal/command prompt into the <code>/cpp</code> directory and invoking <code>node-gyp</code>:</p>
+<pre><code>&gt; node-gyp configure build
+</code></pre><p>If all goes well here you will have a <code>/build/Release</code> folder created right alongside your C++ code files. Within that folder, there should be a <code>rainfall.node</code> output file. <strong>This is your addon</strong>... ready to be required from node.</p>
+<p>At this point, it makes sense to ensure the addon is working as expected. Create a new file in the addon&#39;s root directory (a sibling of <code>/cpp</code>) called <code>rainfall.js</code>. Let&#39;s fill in some details not initially present when we first looked at our calling JavaScript code:</p>
+<pre><code class="lang-javascript">var addon = require(&quot;./cpp/build/Release/rainfall&quot;);
+
+var location = {
+    latitude : 40.71, longitude : -74.01,
+       samples : [ 
+          { date : &quot;2016-06-07&quot;, rainfall : 2 },
+          { date : &quot;2016-08-12&quot;, rainfall : 0.5}
+       ] };
+
+var average = addon.avg_rainfall(location);
+
+// average will be 0 at this point, 
+// since the actual C++ code isn&#39;t complete
+</code></pre>
+<h3 id="mapping-javascript-objects-to-c-classes">Mapping JavaScript objects to C++ classes</h3>
+<p>With the addon established, we can connect the <code>AvgRainfall</code> C++ addon function to the actual C++ logic defined in <code>rainfall.h</code>. To do this, we need some additional code to extract the object properties and instantiate C++ objects. We&#39;ll pack this transfer code into a separate function called within the newly revised <code>AvgRainfall</code> function:</p>
+<pre><code class="lang-cpp">void AvgRainfall(
+  const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args) {
+
+  Isolate* isolate = args.GetIsolate();
+
+  location loc = unpack_location(isolate, args);
+  double avg = avg_rainfall(loc);
+
+  Local&lt;Number&gt; retval = v8::Number::New(isolate, avg);
+  args.GetReturnValue().Set(retval);
+}
+</code></pre>
+<p>The <code>unpack_location</code> function accepts the VM instance and the argument list, and unpacks the V8 object into a new <code>location</code> object - and returns it.</p>
+<pre><code class="lang-cpp">location unpack_location(Isolate * isolate, 
+                const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args) {
+  location loc;
+  Handle&lt;Object&gt; location_obj = Handle&lt;Object&gt;::Cast(args[0]);
+  Handle&lt;Value&gt; lat_Value = 
+                location_obj-&gt;Get(
+                  String::NewFromUtf8(isolate,&quot;latitude&quot;));
+  Handle&lt;Value&gt; lon_Value = 
+                location_obj-&gt;Get(
+                  String::NewFromUtf8(isolate,&quot;longitude&quot;));
+
+  loc.latitude = lat_Value-&gt;NumberValue();
+  loc.longitude = lon_Value-&gt;NumberValue();
+
+  Handle&lt;Array&gt; array = 
+       Handle&lt;Array&gt;::Cast(location_obj-&gt;Get(
+                String::NewFromUtf8(isolate,&quot;samples&quot;)));
+
+  int sample_count = array-&gt;Length();
+  for ( int i = 0; i &lt; sample_count; i++ ) {
+    sample s = unpack_sample(
+      isolate, Handle&lt;Object&gt;::Cast(array-&gt;Get(i)));
+    loc.samples.push_back(s);
+  }
+  return loc;
+}
+</code></pre>
+<p>The <code>unpack_sample</code> function is similar - this is all a matter of unpacking the data from V8&#39;s data types.</p>
+<pre><code class="lang-cpp">sample unpack_sample(Isolate * isolate, 
+  const Handle&lt;Object&gt; sample_obj) {
+
+  sample s;
+  Handle&lt;Value&gt; date_Value = sample_obj-&gt;Get(
+    String::NewFromUtf8(isolate, &quot;date&quot;));
+  Handle&lt;Value&gt; rainfall_Value = sample_obj-&gt;Get(
+    String::NewFromUtf8(isolate, &quot;rainfall&quot;));
+
+  v8::String::Utf8Value utfValue(date_Value);
+  s.date = std::string(*utfValue);
+
+  // Unpack numeric rainfall amount from V8 value
+  s.rainfall = rainfall_Value-&gt;NumberValue();
+  return s;
+}
+</code></pre>
+<h3 id="completed-node-js-file-average-rainfall">Completed Node.js File - Average Rainfall</h3>
+<p>Below is a slightly modified JavaScript listing from above. Executing the file with <code>node</code>, we&#39;ll see the actual average, as computed in C++, is returned.</p>
+<pre><code class="lang-javascript">var addon = require(&quot;./cpp/build/Release/rainfall&quot;);
+
+var location = {
+    latitude : 40.71, longitude : -74.01,
+       samples : [ 
+          { date : &quot;2016-06-07&quot;, rainfall : 2 },
+          { date : &quot;2016-08-12&quot;, rainfall : 0.5}
+       ] };
+
+var average = addon.avg_rainfall(location);
+
+console.log(&quot;Average rain fall = &quot; + average + &quot;cm&quot;);
+</code></pre>
+<p>You should be able to run it - and see that your C++ module has been called!</p>
+<pre><code>&gt; node rainfall.js
+Average rain fall = 1.25cm
+</code></pre><h2 id="returning-objects-a-collection-of-statistics">Returning Objects - a collection of statistics</h2>
+<p>We now have a fully functional node application calling C++. We&#39;ve successfully transformed a single JavaScript object into a C++ object. Now let&#39;s return more than just an average - let&#39;s return an object containing several statistics describing the sample we get from JavaScript.</p>
+<pre><code class="lang-cpp">class rain_result {
+   public:
+       float median;
+       float mean;
+       float standard_deviation;
+       int n;
+};
+</code></pre>
+<p>Just like before, we&#39;ll keep the &quot;business&quot; part of the C++ code completely separate from the code dealing with V8 integration. The class above has been added to the <code>rainfall.h / rainfall.cc</code> files.</p>
+<p>Now we&#39;re going to create a new callable function for the Node addon. So, in the rainfall_node.cc file (where we put all our V8 integration logic), Lets add a new function and register it with the module&#39;s exports.</p>
+<pre><code class="lang-cpp">void RainfallData(
+  const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args) {
+
+  Isolate* isolate = args.GetIsolate();
+
+  location loc = unpack_location(isolate, args);
+  rain_result result = calc_rain_stats(loc);
+
+/*
+ .... return the result object back to JavaScript  ....
+*/
+}
+</code></pre>
+<p>The <code>unpack_location</code> function is just being reused, it&#39;s where we extract the location (and rainfall samples) from the JavaScript arguments. We now also have a new function, defined in <code>rainfall.h / rainfall.cc</code>, called <code>calc_rain_stats</code> which returns a <code>rain_result</code> instance based on the <code>location</code> instance it is given. It computes mean/median/standard deviation.</p>
+<pre><code class="lang-cpp">rain_result calc_rain_stats(location &amp;loc) {
+  rain_result result;
+  double ss = 0;
+  double total = 0;
+
+  result.n = loc.samples.size();
+
+  for (const auto &amp;sample : loc.samples) {
+     total += sample.rainfall;
+  }
+  result.mean = total / loc.samples.size();
+
+  for (const auto &amp;sample : loc.samples) {
+     ss += pow(sample.rainfall - result.mean, 2);
+  }
+  result.standard_deviation = sqrt(ss/(result.n-1));
+
+  std::sort(loc.samples.begin(), loc.samples.end());
+  if (result.n %2 == 0) {
+    result.median = (loc.samples[result.n / 2 - 1].rainfall + 
+                    loc.samples[result.n / 2].rainfall) / 2;
+  }
+  else {
+    result.median = loc.samples[result.n / 2].rainfall;
+  }
+  return result;
+}
+</code></pre>
+<p>The <code>RainfallData</code> function is exported by adding another call to <code>NODE_SET_METHOD</code> inside the <code>init</code> function in <code>rainfall_node.cc</code>.</p>
+<pre><code class="lang-cpp">void init(Handle &lt;Object&gt; exports, Handle&lt;Object&gt; module) {
+  NODE_SET_METHOD(exports, &quot;avg_rainfall&quot;, AvgRainfall);
+  NODE_SET_METHOD(exports, &quot;data_rainfall&quot;, RainfallData);
+}
+</code></pre>
+<h3 id="building-the-javascript-object-and-returning-it">Building the JavaScript object and returning it</h3>
+<p>After unpacking the <code>location</code> object inside the <code>RainfallData</code> function, we get a <code>rainfall_result</code> object:</p>
+<pre><code class="lang-cpp">rain_result result = calc_rain_stats(loc);
+</code></pre>
+<p>Now its time to return that - and to do so we&#39;ll create a new V8 object, transfer the rain_result data into it, and return it back to JavaScript. The API here is all introduced in Chapter 2 - we&#39;re just applying what we learned to build up the objects now.</p>
+<pre><code class="lang-cpp">void RainfallData(
+  const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp; args) {
+
+  Isolate* isolate = args.GetIsolate();
+
+  location loc = unpack_location(isolate, args);
+  rain_result result = calc_rain_stats(loc);
+
+  // Creates a new Object on the V8 heap
+  Local&lt;Object&gt; obj = Object::New(isolate);
+
+  // Transfers the data from result, to obj (see below)
+  obj-&gt;Set(
+    String::NewFromUtf8(isolate, &quot;mean&quot;), 
+    Number::New(isolate, result.mean));
+  obj-&gt;Set(
+    String::NewFromUtf8(isolate, &quot;median&quot;), 
+    Number::New(isolate, result.median));
+  obj-&gt;Set(
+    String::NewFromUtf8(isolate, &quot;standard_deviation&quot;), 
+    Number::New(isolate, result.standard_deviation));
+  obj-&gt;Set(
+    String::NewFromUtf8(isolate, &quot;n&quot;), 
+    Integer::New(isolate, result.n));
+
+  // Return the object
+  args.GetReturnValue().Set(obj);
+}
+</code></pre>
+<p>Notice the similarities between this function and the AvgRainfall function from earlier. They both follow the similar pattern of creating a new variable on the V8 heap and returning it by setting the return value associated with the <code>args</code> variable passed into the function. The difference now is that actually setting the value of the variable being returned is more complicated. In AvgRainfall, we just created a new <code>Number</code>:</p>
+<pre><code class="lang-cpp">Local&lt;Number&gt; retval = v8::Number::New(isolate, avg);
+</code></pre>
+<p>Now, we have we instead move the data over one property at time:</p>
+<pre><code class="lang-cpp">Local&lt;Object&gt; obj = Object::New(isolate);
+obj-&gt;Set(
+  String::NewFromUtf8(isolate, &quot;mean&quot;), 
+  Number::New(isolate, result.mean));
+
+obj-&gt;Set(
+  String::NewFromUtf8(isolate, &quot;median&quot;), 
+  Number::New(isolate, result.median));
+
+obj-&gt;Set(
+  String::NewFromUtf8(isolate, &quot;standard_deviation&quot;), 
+  Number::New(isolate, result.standard_deviation));
+
+obj-&gt;Set(
+  String::NewFromUtf8(isolate, &quot;n&quot;), 
+  Integer::New(isolate, result.n));
+</code></pre>
+<p>While its a bit more code - the object is just being built up with a series of named properties - its pretty straightforward.</p>
+<h3 id="calling-from-javascript">Calling from JavaScript</h3>
+<p>Now that we&#39;ve completed the C++ side, we need to rebuild our addon:</p>
+<pre><code>&gt; node-gyp configure build
+</code></pre><p>In JavaScript, we can now call both methods, and we&#39;ll see the object returned by our new data_rainfall method returns a real JavaScript object.</p>
+<pre><code class="lang-javascript">//rainfall.js
+var rainfall = require(&quot;./cpp/build/Release/rainfall&quot;);
+var location = {
+    latitude : 40.71, longitude : -74.01,
+       samples : [
+          { date : &quot;2015-06-07&quot;, rainfall : 2.1 },
+          { date : &quot;2015-06-14&quot;, rainfall : 0.5}, 
+          { date : &quot;2015-06-21&quot;, rainfall : 1.5}, 
+          { date : &quot;2015-06-28&quot;, rainfall : 1.3}, 
+          { date : &quot;2015-07-05&quot;, rainfall : 0.9}
+       ] };
+
+var avg = rainfall.avg_rainfall(location)
+console.log(&quot;Average rain fall = &quot; + avg + &quot;cm&quot;);
+
+var data = rainfall.data_rainfall(location);
+
+console.log(&quot;Mean = &quot; + data.mean)
+console.log(&quot;Median = &quot; + data.median);
+console.log(&quot;Standard Deviation = &quot; + data.standard_deviation);
+console.log(&quot;N = &quot; + data.n);
+</code></pre>
+<pre><code>&gt; node rainfall.js
+Average rain fall = 1.26cm
+Mean = 1.2599999904632568
+Median = 1.2999999523162842
+Standard Deviation = 0.6066300272941589
+N = 5
+</code></pre><h2 id="receiving-and-returning-arrays-of-rainfall-data">Receiving and Returning Arrays of Rainfall Data</h2>
+<p>Now that we have the ability to move individual samples and individual statistics between JavaScript and C++, extending this to support arrays of data is actually pretty simple - again using the principles introduced in Chapter 2.</p>
+<h3 id="registering-the-callable-addon-function">Registering the callable addon function</h3>
+<p>As always, we start by writing a C++ function in <code>/cpp/rainfall_node.cc</code> that will be callable from Node.js.</p>
+<pre><code class="lang-cpp">void CalculateResults(
+  const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp;args) {
+
+    Isolate* isolate = args.GetIsolate();
+    std::vector&lt;location&gt; locations;  // we&#39;ll get this from Node.js
+    std::vector&lt;rain_result&gt; results; // we&#39;ll build this in C++
+
+    // we&#39;ll populate this with the results
+    Local&lt;Array&gt; result_list = Array::New(isolate);
+
+    // ... and send it back to Node.js as the return value
+    args.GetReturnValue().Set(result_list);
+}
+....
+void init(Handle &lt;Object&gt; exports, Handle&lt;Object&gt; module) {
+
+  NODE_SET_METHOD(exports, &quot;avg_rainfall&quot;, AvgRainfall);
+  NODE_SET_METHOD(exports, &quot;data_rainfall&quot;, RainfallData);
+  NODE_SET_METHOD(exports, &quot;calculate_results&quot;, CalculateResults);
+}
+</code></pre>
+<p>The <code>CalculateResults</code> function will extract a list of location objects from the parameters (<code>args</code>) and eventually return a fully populated array of results. We make it callable by calling the <code>NODE_SET_METHOD</code> in the <code>init</code> function - so we can call <code>calculate_results</code> in JavaScript.</p>
+<p>Before we implement the C++, lets look at how this will all be called in JavaScript. First step is to rebuild the addon from the <code>cpp</code> directory:</p>
+<pre><code>&gt;  node-gyp configure build
+</code></pre><p>In the rainfall.js, we&#39;ll construct an array of locations and invoke our addon:</p>
+<pre><code class="lang-javascript">// Require the Addon
+var rainfall = require(&quot;./cpp/build/Release/rainfall&quot;);
+
+var makeup = function(max) {
+    return Math.round(max * Math.random() * 100)/100;
+}
+
+// Build some dummy locations
+var locations = []
+for (var i = 0; i &lt; 10; i++ ) {
+    var loc = {
+        latitude: makeup(180), 
+        longitude: makeup(180), 
+        samples : [
+            {date: &quot;2015-07-20&quot;, rainfall: makeup(3)}, 
+            {date: &quot;2015-07-21&quot;, rainfall: makeup(3)}, 
+            {date: &quot;2015-07-22&quot;, rainfall: makeup(3)}, 
+            {date: &quot;2015-07-23&quot;, rainfall: makeup(3)}
+        ]
+    }
+    locations.push(loc);
+}
+
+// Invoke the Addon
+var results = rainfall.calculate_results(locations);
+
+// Report the results from C++
+var i = 0;
+results.forEach(function(result){
+    console.log(&quot;Result for Location &quot; + i);
+    console.log(&quot;--------------------------&quot;);
+    console.log(&quot;\tLatitude:         &quot; 
+        + locations[i].latitude.toFixed(2));
+    console.log(&quot;\tLongitude:        &quot; 
+        + locations[i].longitude.toFixed(2));
+    console.log(&quot;\tMean Rainfall:    &quot; 
+        + result.mean.toFixed(2) + &quot;cm&quot;);
+    console.log(&quot;\tMedian Rainfall:  &quot; 
+        + result.median.toFixed(2) + &quot;cm&quot;);
+    console.log(&quot;\tStandard Dev.:    &quot; 
+        + result.standard_deviation.toFixed(2) + &quot;cm&quot;);
+    console.log(&quot;\tNumber Samples:   &quot; 
+        + result.n);
+    console.log();
+    i++;
+})
+</code></pre>
+<p>When you run this with <code>node rainfall</code> you&#39;ll get no output, only because the C++ function is returning an empty array at this point. Try putting a <code>console.log(results)</code> in, you should see <code>[]</code> print out.</p>
+<h3 id="extracting-the-array-in-c-">Extracting the Array in C++</h3>
+<p>Now lets skip back to our <code>CalculateResults</code> C++ function. We&#39;ve been given the function callback arguments object, and our first step is to cast it to a V8 array.</p>
+<pre><code class="lang-cpp">void CalculateResults(
+  const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp;args) {
+
+    Isolate* isolate = args.GetIsolate();
+    ... (see above)...
+    Local&lt;Array&gt; input = Local&lt;Array&gt;::Cast(args[0]);
+    unsigned int num_locations = input-&gt;Length();
+</code></pre>
+<p>With the V8 array <code>input</code>, we&#39;ll now loop through and actually create a POCO <code>location</code> object using the <code>unpack_location</code> function we&#39;ve been using throughout this chapter. The return value from <code>unpack_location</code> is pushed onto a standard C++ vector.</p>
+<pre><code class="lang-cpp">for (unsigned int i = 0; i &lt; num_locations; i++) {
+  locations.push_back(
+       unpack_location(isolate, Local&lt;Object&gt;::Cast(input-&gt;Get(i)))
+  );
+}
+</code></pre>
+<p>Of course, now that we have a standard vector of <code>location</code> objects, we can call our existing <code>calc_rain_stats</code> function on each one and build up a vector of <code>rain_result</code> objects.</p>
+<pre><code class="lang-cpp">results.resize(locations.size());
+std::transform(
+     locations.begin(), 
+     locations.end(), 
+     results.begin(), 
+     calc_rain_stats);
+</code></pre>
+<h3 id="building-an-array-to-return-back-from-c-">Building an Array to return back from C++</h3>
+<p>Our next step is to move the data we&#39;ve created into the V8 objects that we&#39;ll return. First, we create a new V8 Array:</p>
+<pre><code class="lang-cpp">Local&lt;Array&gt; result_list = Array::New(isolate);
+</code></pre>
+<p>We can now iterate through our <code>rain_result</code> vector and use the <code>pack_rain_result</code> function to create a new V8 object and add it to the <code>result_list</code> array.</p>
+<pre><code class="lang-cpp">for (unsigned int i = 0; i &lt; results.size(); i++ ) {
+      Local&lt;Object&gt; result = Object::New(isolate);
+      pack_rain_result(isolate, result, results[i]);
+      result_list-&gt;Set(i, result);
+    }
+</code></pre>
+<p>And... we&#39;re all set. Here&#39;s the complete code for the <code>CalculateResult</code> function:</p>
+<pre><code class="lang-cpp">void CalculateResults(
+  const v8::FunctionCallbackInfo&lt;v8::Value&gt;&amp;args) {
+
+    Isolate* isolate = args.GetIsolate();
+    std::vector&lt;location&gt; locations;
+    std::vector&lt;rain_result&gt; results;
+
+    // extract each location (its a list)
+    Local&lt;Array&gt; input = Local&lt;Array&gt;::Cast(args[0]);
+    unsigned int num_locations = input-&gt;Length();
+    for (unsigned int i = 0; i &lt; num_locations; i++) {
+      locations.push_back(
+             unpack_location(isolate, 
+              Local&lt;Object&gt;::Cast(input-&gt;Get(i))));
+    }
+
+    // Build vector of rain_results
+    results.resize(locations.size());
+    std::transform(
+          locations.begin(), 
+          locations.end(), 
+          results.begin(), 
+          calc_rain_stats);
+
+
+    // Convert the rain_results into Objects for return
+    Local&lt;Array&gt; result_list = Array::New(isolate);
+    for (unsigned int i = 0; i &lt; results.size(); i++ ) {
+      Local&lt;Object&gt; result = Object::New(isolate);
+      pack_rain_result(isolate, result, results[i]);
+      result_list-&gt;Set(i, result);
+    }
+
+    // Return the list
+    args.GetReturnValue().Set(result_list);
+}
+</code></pre>
+<p>Do another <code>node-gyp configure build</code> and re-run <code>node rainfall.js</code> and you&#39;ll see the fully populated output results from C++.</p>
+<pre><code>Result for Location 0
+--------------------------
+    Latitude:         145.45
+    Longitude:        7.46
+    Mean Rainfall:    1.59cm
+    Median Rainfall:  1.65cm
+    Standard Dev.:    0.64cm
+    Number Samples:   4
+
+Result for Location 1
+--------------------------
+    Latitude:         25.32
+    Longitude:        98.64
+    Mean Rainfall:    1.17cm
+    Median Rainfall:  1.24cm
+    Standard Dev.:    0.62cm
+    Number Samples:   4
+....
+</code></pre><h2 id="about-efficiency">About efficiency</h2>
+<p>You might be wondering, aren&#39;t we wasting a lot of memory by creating POCO copies of all the V8 data? Its a good point, for all the data being passed into the C++ Addon, the V8 objects (which take up memory) are being moved into new C++ objects. Those C++ objects (and their derivatives) are then copied into new V8 objects to be returned... we&#39;re doubling memory consumption and its also costing us processing time to do all this!</p>
+<p>For most use cases you&#39;ll end up working with, the overhead of memory copying (both time and space) is dwarfed by the actual execution time of the algorithm and processing that I&#39;m doing in C++. If you are going through the trouble of calling C++ from Node, its because the actual compute task is <em>significant</em>!</p>
+<p>For situations where the cost of copying input/output isn&#39;t dwarfed by your actual processing time, it would probably make more sense to use V8 object wrapping API instead (Chapter 5), or to use Buffers (Appendix B) to directly allocate data <em>outside</em> V8 in the first place.</p>
+<p><a href="ch04.html">Next Chapter</a><br><a href="index.html">Table of Contents</a></p>
+</body></html>

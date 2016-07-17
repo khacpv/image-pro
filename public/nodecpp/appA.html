@@ -1,0 +1,853 @@
+<!doctype html><html><head>
+
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/styles/default.min.css">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/highlight.min.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+  <style>
+      .markdown-body {
+          box-sizing: border-box;
+          min-width: 200px;
+          max-width: 980px;
+          margin: 0 auto;
+          padding: 45px;
+      }
+      .highlight {
+        background-color:red;
+        background-color:#f1c40f;
+        padding:1em;
+      }
+  </style>
+<title>C++ and Node.js Integration</title>
+</head><body class='markdown-body'>
+<p><a href="index.html">Table of Contents</a></p>
+<h1 id="appendix-a-alternatives-to-addons">Appendix A - Alternatives to Addons</h1>
+<p><em>Note: This appendix is largely taken from a series of blog posts on the author&#39;s website, <a href="http://blog.scottfrees.com/getting-your-c-to-the-web-with-node-js">blog.scottfrees.com</a>, which covers the various ways one might choose to integrate an <strong>existing, legacy C/C++ program</strong> into a Node.js web app. The series is standalone from this book, and as such, you might find some of this material to be redundant, however it illustrates a real world example of integrating legacy C++ code as opposed to the narrowly scoped examples in the book. The section also has a different github repository to download the code from than the other examples throughout this book. It is highly recommended that you do grab the code, as there is a lot of it that is not presented in the text!</em></p>
+<p>This book has focused 100% on Node.js C++ addons as the method of choice for integrating Node.js and C++. In many cases, addons are indeed the best alternative for doing this sort of integration, however there are other options - and this book would be incomplete without discussing them. Before doing so, let&#39;s take a step back and re-ask the question asked way back in Chapter 1: <em>Why integrate Node.js and C++</em>? To sharpen the discussion, <strong>let&#39;s look at this from the perspective of having an existing C++/C program that you wish to get onto the web</strong>.</p>
+<p><em>Can&#39;t I just write a C++ web site?</em></p>
+<p>Well... yes - you could! People have been writing parts of web applications in C++ for a very long time - using CGI. CGI isn&#39;t the most popular thing on the web these days though, it lacks a lot of productivity enhancements that makes web development so great today. More importantly, it introduces some significant performance and scalability issues. On the other hand, C++ has come a long way over the past few years in terms of expressiveness, and the C++14 standard has enabled a some really cool projects focused on writing modern MVC-styled web apps in pure C++. If that&#39;s your thing, check out <a href="http://siliconframework.org/">Silicon</a>.</p>
+<p>The majority of web developers aren&#39;t C++ programmers, and frankly, unless ultra high performance from your web tier is critical, you are probably better off using languages providing a higher level of abstraction. The common players on the web being Ruby, Go, Node.js, Python, PHP along with many more...</p>
+<p><em>Why Node.js?</em></p>
+<p>Node.js has a number of advantages. For one, it <strong>integrates</strong> really nicely with C++ in several different ways - one of which of course we&#39;ve seen throughout this book! In general, Node.js also has a lot of benefits that dovetail with why you&#39;d be using C++ in the first place - it&#39;s highly portable, it promotes performance at scale, and has a thriving <a href="https://www.npmjs.com/">ecosystem</a>.</p>
+<p><em>Why not just rewrite the C++?</em></p>
+<p>Ah... every developer&#39;s first instinct - &quot;Let&#39;s rewrite this old code written in language X because language Y is so much cooler | better | faster | easier!&quot;. First off - if you have some legacy C++ code that is simple, small, and doesn&#39;t really need to be high performance - this might very well be the best answer. However, if you are in that category, you probably aren&#39;t reading this - you&#39;re likely almost done rewriting your C++ code.</p>
+<p>There are a few practical reasons not to rewrite code. <strong>First</strong>, you might not have the code! Believe it or not, if you are working for a company that uses legacy tools to support their business, source code for these tools are often lost to time. A derivative of this is when your legacy code uses third-party dependencies, which cannot be rewritten or modified.</p>
+<p><strong>Second</strong>, C/C++ can be complex - and if it&#39;s old, it might be really hard to decipher. Are you a web developer that is also a C++ guru? Are you <em>positive</em> you can completely recreate the precise inputs/outputs of this program? If it&#39;s a critical line of business tool, you are putting a <strong>ton</strong> of risk on your plate.</p>
+<p>The <strong>third reason</strong> not to rewrite your C++ is because it might really want to be in C++! While Node.js has decent performance, it&#39;s simply not C/C++. If your application has extreme performance criteria, you aren&#39;t going to beat C++.</p>
+<h2 id="c-and-node-js-your-options">C++ and Node.js - your options</h2>
+<p>There are three general ways of integrating C++ code with a Node.js application - although there are lots of variations within each category:</p>
+<ol>
+<li><strong>Automation</strong> - call your C++ as a standalone app in a child process.</li>
+<li><strong>Shared library</strong> - pack your C++ routines in a shared library (dll) and call those routines from Node.js directly.</li>
+<li><strong>Node.js Addon</strong> - compile your C++ code as a native Node.js module/addon (*we know all about this now, right?)</li>
+</ol>
+<p>Each of these options have their advantages and disadvantages, they primarily differ in the degree in which you need to modify your C++, the performance hit you are willing to take when calling C++, and your familiarity / comfort in dealing with Node.js and the V8 API.</p>
+<h3 id="how-to-choose">How to choose</h3>
+<p>The most obvious question to ask first is <strong>do you have access to the C++ source</strong>, <em>or just the binary?</em> Without source code, you need to hope the C++ program is either a command line program or a dll/lib shared library. If you are looking at a program written with only a graphical user interface… well then you are in a world of pain. Its likely you are going to need to rewrite your application in order to make it work on the web.</p>
+<h3 id="option-1-automation">Option 1 - Automation</h3>
+<p>If your C++ runs as a standalone from a command line, you don&#39;t need the source code to take advantage of Option 1 - the <strong>automation option</strong>. You can run your C++ program unaltered, using Node&#39;s <a href="https://nodejs.org/api/child_process.html">child process</a> API. This option works for bringing just about anything to the web - it really doesn&#39;t make a difference what language your command line program is written in if you are simply running it. If you are reading this hoping to get C code, Fortran code, or some other language onto the web - then this option is worth reading.</p>
+<p>The automation option is not only for those <em>without</em> the underlying C++ code. If you have C++ code that either is currently, or could easily be turned into, a command line program - then this option is reasonable if you can live with the performance, and you don&#39;t really want to get into the hassles of language integration.</p>
+<h3 id="option-2-shared-library-dll">Option 2 - Shared Library / DLL</h3>
+<p>If you are dealing with a C++ dll/lib, or you have the C++ source code and can make modest modifications in order to create a shared library, then the <strong>shared library</strong> approach might work well for you. We&#39;ll detail how you can do this using the <a href="https://github.com/node-ffi/node-ffi">Foreign Function Interface</a> module in this chapter. This option gives you more fine-grain control of how you integrate C++ into Node, because calls to C++ routines can be interleaved with Node.js code itself. While this approach brings you closer to full integration, you still have to deal with type conversions and blocking when calling C++. It&#39;s a great option if you want better integration, without investing a lot of time dealing with V8.</p>
+<h3 id="option-3-node-js-addon">Option 3 - Node.js Addon</h3>
+<p>If you have the C++ source code, then a third option is creating a native Node.js module out of your C++. While this is the more challenging approach, you gain a ton of flexibility and performance. You also have the option to call your C++ asynchronously so you don&#39;t block your web application&#39;s event-loop while your C++ is crunching numbers. When we cover this part in this section, it will serve largely as a review of the material already presented in the main chapters of the book.</p>
+<h2 id="a-running-example-prime-numbers">A running example - Prime Numbers</h2>
+<p>Throughout this section I&#39;ll be showing you examples of how to implement each of the options above. I want to use the same basic example in each. Prime numbers are extremely important for lots of stuff (i.e. cryptography), and their generation tends to be really computationally expensive. A quick search online will direct you mostly towards C and C++ implementations - and the really efficient ones are <em>complicated</em>. Looking at their source, you&#39;ll instantly recognize that you probably don&#39;t&#39; want to rewrite them - unless you are just looking for a challenge - which is fine:).</p>
+<p>One of the more effective algorithms is called <a href="https://en.wikipedia.org/wiki/Sieve_of_Eratosthenes">Sieve of Eratosthenes</a>. There is a really popular C++ suite, <a href="http://primesieve.org/">primseieve</a> - but it&#39;s pretty complicated to build. Instead, I found a simpler implementation that is more suitable for our purposes. You can find the source code for it at <a href="http://wwwhomes.uni-bielefeld.de/achim/prime_sieve.html">http://wwwhomes.uni-bielefeld.de/achim/prime_sieve.html</a>, but it&#39;s also in the git repository - <a href="https://github.com/freezer333/cppwebify-tutorial">https://github.com/freezer333/cppwebify-tutorial</a> for this section.</p>
+<h2 id="getting-started-a-simple-node-js-web-app">Getting Started - a simple Node.js Web app</h2>
+<p>Throughout this section I&#39;ll use the <strong>exact</strong> same Node.js web application. It&#39;s pretty bare-bones, there is a single HTML page with some JavaScript (AngularJS) that asks the web server for prime numbers under a user specified value. The web server responds with a JSON object containing the primes - computed using one of the several techniques I&#39;ll implement.</p>
+<p>I assume the reader has some basic understanding of a Node.js web app. I created the app with Express on the backend and AngularJS on the frontend, but I stayed away from any complexity and eye/candy as to not distract from the purpose of these tutorials. It&#39;s also a great setup for an API into your C++ code - just ditch the UI!</p>
+<p>To get started - clone my github repository and check out tag &quot;start&quot;.</p>
+<pre><code class="lang-bash">$ git clone https://github.com/freezer333/cppwebify-tutorial.git
+
+$ git checkout start
+</code></pre>
+<p>You can poke around the web app yourself - but the relevant bits are the front end - found in /web/views and the backend, found in /index.js and /routes.</p>
+<p>Let&#39;s take a quick look at /index.js. The first ten lines or so are just boilerplate express code:</p>
+<pre><code class="lang-javascript">var express = require(&#39;express&#39;);
+var app = express();
+var bodyParser = require(&#39;body-parser&#39;);
+
+app.use(express.static(&#39;public&#39;));
+app.set(&#39;view engine&#39;, &#39;jade&#39;);
+
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+</code></pre>
+<p>The next line line is building an array of &quot;types&quot; - which will eventually hold entries for each example in the post series. For now, we only have one - a Node.js primesieve implementation.</p>
+<pre><code class="lang-javascript">var types = [
+  {
+    title: &quot;pure_node&quot;,
+    description: &quot;Execute a really primitive &quot; + 
+        &quot;implementation of prime sieve in Node.js&quot;
+  }];
+</code></pre>
+<p>Each of the entries in types will correspond to a route, found in the /routes directory. These are loaded dynamically from index.js and the web server is started by the final hand full of lines.</p>
+<pre><code class="lang-javascript">types.forEach(function (type) {
+    app.use(&#39;/&#39;+type.title, require(&#39;./routes/&#39; + type.title));
+});
+
+app.get(&#39;/&#39;, function (req, res) {
+  res.render(&#39;index&#39;, { routes: types});
+});
+
+var server = app.listen(3000, function () {
+  console.log(&#39;Web server listing at http://localhost:%s&#39;, 
+    server.address().port);
+});
+</code></pre>
+<p>To launch the web server, navigate to the <code>/web</code> directory in your terminal and type the following:</p>
+<pre><code class="lang-bash">$ npm install
+... dependencies will be installed
+$ node index
+</code></pre>
+<p>Now point your browser to <code>http://localhost:3000</code>. You&#39;ll get the index page, which lists the implementation options. For now, you&#39;ll just have one option - &quot;pure_node&quot;. Click on it, and you&#39;ll see a page with a single number box. Type <code>100</code> and submit - and the Node.js implementation of primesieve will run and return all prime numbers under 100.</p>
+<p><img src="imgs/img001.png" alt="Results for primes under 100"></p>
+<p>The primesieve implementation in Node.js is found in <code>routes/pure_node.js</code>. By comparison to the C implementation we&#39;ll use throughout the remainder of this series, it&#39;s mind-numbingly simple - but it gets the job done! The code that handles the actual response is the router&#39;s post method:</p>
+<pre><code class="lang-javascript">router.post(&#39;/&#39;, function(req, res) {
+    var under = parseInt(req.body.under); // from the user
+
+    var primes = find_primes(under);
+
+    res.setHeader(&#39;Content-Type&#39;, &#39;application/json&#39;);
+    res.end(JSON.stringify({
+      results: primes
+    }));
+});
+</code></pre>
+<h2 id="automating-a-c-program-from-a-node-js-web-app">Automating a C++ program from a Node.js Web app</h2>
+<p>If your C++ runs standalone from a command line - or can be made to do so - you can run it using Node&#39;s <a href="https://nodejs.org/api/child_process.html">child process</a> API. This option works for bringing just about anything to the web - it really doesn&#39;t make a difference what language your command line program is written in if you are simply running it.</p>
+<p>Two features of automation make it attractive. First, since you are executing the C++ application in another process, you are essentially doing the C++ job <em>asynchronously</em> - which is a big win on the web since you can process other incoming HTTP traffic while the C++ app is working. Second, you really don&#39;t need to do a great deal of <em>language integration</em> or use sophisticated V8 API&#39;s - it&#39;s actually pretty easy!</p>
+<p>For this particular section, checkout the <strong>automation</strong> tag from the git repository.</p>
+<pre><code class="lang-bash">$ git checkout automation
+</code></pre>
+<h3 id="prime-sieve-c-c-implementation">Prime Sieve C/C++ implementation</h3>
+<p>As described above, we&#39;re building all the examples around a C implementation of the <a href="https://en.wikipedia.org/wiki/Sieve_of_Eratosthenes">Sieve of Eratosthenes</a> Prime number calculation strategy. It&#39;s a good example problem, because speed matters big time for prime numbers - and the C code that I&#39;m using is not exactly the type of thing you&#39;d be eager to rewrite! The example I&#39;m using - <a href="http://wwwhomes.uni-bielefeld.de/achim/prime_sieve.html">http://wwwhomes.uni-bielefeld.de/achim/prime_sieve.html</a> - is actually pretty simple, compared to more complex techniques that leverage CPU caching, among other things. Head over to <a href="http://primesieve.org/">primesieve.org</a> to get an idea. For implementations of Prime Sieve, the user of the program must enter a maximum value, and the algorithm will output all prime numbers &quot;under&quot; this value. We&#39;ll call that input value &quot;under&quot; throughout most of this chapter.</p>
+<p>To follow along, please take a look at the original primesieve.c code now, found at <a href="https://gist.github.com/freezer333/ee7c9880c26d3bf83b8e">https://gist.github.com/freezer333/ee7c9880c26d3bf83b8e</a> - although don&#39;t get too caught up in the details, we won&#39;t need to mess with it much (that&#39;s the whole point!).</p>
+<h4 id="modifications-to-primesieve-c">Modifications to primesieve.c</h4>
+<p>When faced with integrating a legacy program, you might not have the luxury of accessing the code. For the purposes of this chapter, I&#39;m going to simulate a few common integration scenarios - and I&#39;ll edit some bits of the original primesieve.c in order to allow for this.</p>
+<ul>
+<li><strong>Scenario 1:</strong> An app that gets input only from command line arguments, and prints to standard out.</li>
+<li><strong>Scenario 2:</strong> An app that gets input from the user (stdin), and prints to standard out.</li>
+<li><strong>Scenario 3:</strong> An app that gets input from a file, and outputs to another file.</li>
+</ul>
+<p>To simulate each scenario, we&#39;ll want to be able to pass a file descriptor into the main routine of primesieve.c, so the program doesn&#39;t <em>always</em> print to the console. Let&#39;s rename <code>main</code> to <code>generate_args</code> and add a third parameter for the file descriptor. We&#39;ll make specific use of this in Scenario 3.</p>
+<pre><code class="lang-cpp">// in cppwebify-tutorial/cpp/prime4standalone/prime_sieve.c, 
+// I&#39;ve renamed int main(int argc, char *argv[])
+// to:
+int generate_args(int argc, char * argv[], FILE * out) {
+    ... complicated prime number stuff ...
+</code></pre>
+<p>I&#39;ll write the entry point in a different file (<code>main.cpp</code>), so I&#39;m also adding the declaration of <code>generate_args</code> to a header file called <code>prime_sieve.h</code>.</p>
+<p>I&#39;m creating a second function - <code>generate</code> which provides a simplified interface - it just accepts the &quot;under&quot; parameter instead of command line arguments. The definition is at the bottom of prime_sieve.c, and just transforms the parameter into character arguments and calls <code>generate_args</code>. This is just so I don&#39;t edit the original code much, and to make Scenario 2 below a little cleaner. Obviously, the imaginative reader can figure out better ways of doing all this :)</p>
+<pre><code class="lang-cpp">// at the bottom of cppwebify-tutorial/cpp/prime4standalone/prime_sieve.c,
+// an adapter function for use when we aren&#39;t using command-line arguments
+int generate(int under, FILE *out) {
+  char * name = &quot;primes&quot;;
+  char param [50];
+  sprintf(param, &quot;%d&quot;, under);
+  char * values[] = { name, param};
+  generate_args(2, values, out);
+}
+</code></pre>
+<p>So, we&#39;re left with the following prime_sieve.h header - using <code>extern C</code> to make sure our C functions can be integrated correctly with the C++ main files I&#39;ll use in the examples.</p>
+<pre><code class="lang-cpp">extern &quot;C&quot; {
+    // the old main, renamed - with a third parameter&quot;
+    // to direct output to a file as needed
+    int generate_args(int argc, char * argv[], FILE * out);
+
+    // an adapter function when the caller hasn&#39;t
+    // received under through command line arguments
+    int generate(int under, FILE * out);
+}
+</code></pre>
+<h3 id="the-node-js-child-process-api">The Node.js Child Process API</h3>
+<p>Node.js contains a <code>child_process</code> module which exposes a robust API for creating and controlling processes. There are three basic calls for creating new child processes - each with their own use cases.</p>
+<p>The first is <code>execFile</code>, which accepts (at a minimum) a file path to an executable program. You may pass an array of arguments that will be called with the program. The last parameter to the function is a callback to be executed when the program terminates. This callback will have an error, a stdout buffer, and a stderr buffer given to it, which can be used to interrogate the program&#39;s output. It&#39;s important to note that this callback is only called after the program executes. <code>execFile</code> also returns an object representing the child process, and you may write to it&#39;s stdin stream.</p>
+<pre><code class="lang-javascript">// standard node module
+var execFile = require(&#39;child_process&#39;).execFile
+
+// this launches the executable and returns immediately
+var child = execFile(&quot;path to executable&quot;, [&quot;arg1&quot;, &quot;arg2&quot;],
+  function (error, stdout, stderr) {
+    // This callback is invoked once the child terminates
+    // You&#39;d want to check err/stderr as well!
+    console.log(&quot;Here is the complete output of the program: &quot;);
+    console.log(stdout)
+});
+
+// if the program needs input on stdin, you can write to it immediately
+child.stdin.setEncoding(&#39;utf-8&#39;);
+child.stdin.write(&quot;Hello my child!\n&quot;);
+</code></pre>
+<p>I find the <code>execFile</code> function is best when you have to automate an application that has well-defined input and operates in sort of a &quot;single phase&quot; - meaning once you give it some input it goes off for a while, and the dumps all of it&#39;s output. This is precisely the type of program the prime sieve program is - so we&#39;ll use execFile throughout this chapter.</p>
+<p>The <code>child_process</code> module has two other functions to create processes - <code>spawn</code> and <code>exec</code>. <code>spawn</code> is a lot like <code>execFile</code>, it accepts an executable and launches it. The difference is that <code>spawn</code> will give you a streamable interface to stdout and stderr. This works really well for more complex I/O scenarios where there is a back and forth dialog between your node code and the C++ app. <code>exec</code> is again very similar to <code>execFile</code>, but is used for shell programs (ls, pipes, etc).</p>
+<h4 id="synchronous-options">Synchronous options</h4>
+<p>In Node.js v0.12 a <a href="https://strongloop.com/strongblog/whats-new-in-node-js-v0-12-execsync-a-synchronous-api-for-child-processes/">new set of API&#39;s</a> was introduced which allows you to execute child applications <em>synchronously</em> - your program will block when you start the child process and resume when the child process terminates (and sends you back it&#39;s output). This is fantastic if you are creating shell scripts, but it&#39;s decidedly <em>not</em> for web applications. For our prime number demo, certainly when we get an HTTP request for prime numbers we need to wait for the complete output before serving the page of results to the browser - <em>but we should be able to continue serving <strong>other HTTP</strong> requests from other browsers</em> in the meantime! Unless you have a really specific reason, you&#39;ll want to stay away from <code>spawnSync</code>, <code>execSync</code>, and <code>execFileSync</code> when writing web servers.</p>
+<h3 id="scenario-1-c-program-with-input-from-command-line-arguments">Scenario 1: C++ Program with input from command-line arguments</h3>
+<p>The simplest type of program to automate is a program that will accept all of it&#39;s input as command line arguments and dump it&#39;s output to stdout - so we&#39;ll start with this scenario.</p>
+<p>So - let&#39;s &quot;imagine&quot; prime sieve works like this (actually, it basically already does!). To use the application, we might type:</p>
+<pre><code class="lang-bash">$ primesieve 10
+2
+3
+5
+7
+# {1 &lt;= primes &lt;= 10} = 4
+0.000000000000  -3.464368964356
+</code></pre>
+<p>And we&#39;d get all prime numbers under 10 printed out to the screen (one on each line) - plus some extra info printed by the program that we don&#39;t need.</p>
+<p><em>I&#39;ll keep the output easy to parse in all my examples - obviously if your program spits out data in a tough-to-parse way, you&#39;ll have a bit more work to do.</em></p>
+<h4 id="using-node-gyp-to-compile-the-prime-sieve-c-">Using node-gyp to compile the prime sieve C++</h4>
+<p>Our first step is to actually get an executable C++ application! The C++ code in <code>cpp/prime4standalone</code> doesn&#39;t have an entry point - it&#39;s just the prime number generation code, and it will be shared across all 3 of the scenarios we&#39;re covering here. In <code>cpp/standalone_stdio</code> I&#39;ve created an entry point:</p>
+<pre><code class="lang-cpp">#include &lt;iostream&gt;
+#include &lt;stdio.h&gt;
+#include &quot;prime_sieve.h&quot;
+using namespace std;
+
+int main(int argc, char ** argvs) {
+    generate_args(argc, argvs, stdout);
+}
+</code></pre>
+<p>The next step is to build the C++ executable - compiling together all three files: 1. <code>cpp/standalone_stdio/main.cpp</code> 2. <code>cpp/prime4standalone/prime_sieve.h</code> 3. <code>cpp/prime4standalone/prime_sieve.c</code></p>
+<p>If you are familiar with building C++, you&#39;ll have no trouble doing this with whatever your favorite compiler platform is. We&#39;re going to eventually need to use <code>node-gyp</code> - so I&#39;ve setup all the C++ examples this way.</p>
+<pre><code class="lang-bash">$ node-gyp configure build
+</code></pre>
+<p>In <code>/cpp/standalone_stdio</code> you&#39;ll find a <code>binding.gyp</code> file. This contains all the information needed to build this particular example with node-gyp - think of it as a Makefile.</p>
+<pre><code class="lang-javascript">{
+  &quot;targets&quot;: [
+    {
+      &quot;target_name&quot;: &quot;standalone&quot;,
+      &quot;type&quot;: &quot;executable&quot;,
+      &quot;sources&quot;: [ &quot;../prime4standalone/prime_sieve.c&quot;, 
+        &quot;main.cpp&quot;],
+      &quot;cflags&quot;: [&quot;-Wall&quot;, &quot;-std=c++11&quot;],
+      &quot;include_dirs&quot; : [&#39;../prime4standalone&#39;],
+      &quot;conditions&quot;: [
+        [ &#39;OS==&quot;mac&quot;&#39;, {
+            &quot;xcode_settings&quot;: {
+                &#39;OTHER_CPLUSPLUSFLAGS&#39; : [&#39;-std=c++11&#39;,
+                  &#39;-stdlib=libc++&#39;],
+                &#39;OTHER_LDFLAGS&#39;: [&#39;-stdlib=libc++&#39;],
+                &#39;MACOSX_DEPLOYMENT_TARGET&#39;: &#39;10.7&#39; }
+            }
+        ]
+      ]
+    }
+  ]
+}
+</code></pre>
+<p>Lets cover a few basics. We only have one target defined (&quot;standalone&quot;) - so it has become the default. It&#39;s <code>type</code> is critical here, because node-gyp can also compile shared libraries and (of course!) native Node.js addons. Setting <code>type</code> to <code>executable</code> tells node-gyp to create a standard runnable executable. The <code>sources</code> array contains our source (the header is not needed, but could be added). Since a lot of my C++ later in this section will make use of C++11, I&#39;m also passing in a few compiler flags in the <code>cflags</code> property. I also pass along OS X specific stuff to make C++11 work on a Mac with XCode. These special options are included in the <code>conditions</code> property and are ignored under Linux and Windows. Finally, I&#39;ve made sure the compiler can find the include file by adding in the path under the <code>include_dirs</code> property.</p>
+<p>The result of our build operation - <code>node-gyp configure build</code> - should create an executable in <code>cpp/standalone_stdio/build/Release</code> called <code>standalone</code>. You should be able to run it directly from the command line. <strong>Now let&#39;s run it from Node.js</strong>.</p>
+<h4 id="automating-from-node-js">Automating from Node.js</h4>
+<p>Earlier we setup a really simple Node.js web application that had a single route that could calculate prime numbers using a pure JavaScript prime sieve implementation. Now we&#39;ll create a second route that uses our C++ implementation.</p>
+<p>In <code>cppwebify-tutorial/web/index.js</code> first we&#39;ll add a new entry in our <code>types</code> array for the new C++ route:</p>
+<pre><code class="lang-javascript">var types = [
+  {
+    title: &quot;pure_node&quot;,
+    description: &quot;Execute a really primitive &quot; + 
+      &quot;implementation of prime sieve in Node.js&quot;
+  },
+  {
+    title: &quot;standalone_args&quot;,
+    description: &quot;Execute C++ executable as a &quot; + 
+                 &quot;child process, using command &quot; +
+                 &quot;line args and stdout.  &quot; + 
+                 &quot;Based on /cpp/standalone_stdio&quot;
+  }];
+</code></pre>
+<p>That type array is used to create the routes by looking for a file named the same as each <code>title</code> property in the <code>web/routes/</code> directory:</p>
+<pre><code class="lang-javascript">types.forEach(function (type) {
+    app.use(&#39;/&#39;+type.title, require(&#39;./routes/&#39; + type.title));
+});
+</code></pre>
+<p>Now let&#39;s add our route in <code>/web/routes/standalone_args</code>. If you take a look, lines 1-9 are basically the same as the <code>pure_node</code> example - line 11 is where we start respond to an actual user request for prime numbers by executing the C++ app:</p>
+<pre><code class="lang-javascript">router.post(&#39;/&#39;, function(req, res) {
+    var execFile = require(&#39;child_process&#39;).execFile
+    // we build this with node-gyp above...
+    var program = &quot;../cpp/standalone_stdio/build/Release/standalone&quot;;
+
+    // from the browser
+    var under = parseInt(req.body.under);
+    var child = execFile(program, [under],
+      function (error, stdout, stderr) {
+        // The output of the prime_sieve function has 
+        // one prime number per line.  
+
+        // The last 3 lines are additional information,
+        // which we aren&#39;t using here - so I&#39;m slicing 
+        // the stdout array and mapping each line to an int.
+        // You&#39;ll want to be more careful parsing your 
+        // program&#39;s output!
+        var primes = stdout.split(&quot;\n&quot;).slice(0, -3)
+                           .map(function (line) {
+                             return parseInt(line);
+                           });
+
+        res.setHeader(&#39;Content-Type&#39;, &#39;application/json&#39;);
+        res.end(JSON.stringify({
+          results: primes
+        }));
+
+        console.log(&quot;Primes generated from &quot; + type);
+    });
+});
+</code></pre>
+<p>While you&#39;ll likely need to be a bit more robust when handling program output (and dealing with input from the browser), as you can see it&#39;s pretty simple to call your child process and return a response to the browser. Go ahead and run the web app by typing <code>node index.js</code> in your terminal under <code>cppwebify-tutorial/web</code> and point your browser to <code>http://localhost:3000/</code>. Choose the &quot;standalone_args&quot; strategy, you can enter 100 to get all the primes under 100 - this time using a much faster C-based implementation!</p>
+<p><img src="imgs/img002.png" alt="Results for primes under 100"></p>
+<h3 id="scenario-2-c-program-that-gets-input-from-user-stdin-">Scenario 2: C++ Program that gets input from user (stdin)</h3>
+<p>Lots of programs ask an actual user for their input. If you have access to the code of your program, it&#39;s probably easy to change it so it accepts these inputs as command line args - which means you could just use the strategy in Scenario 1. Sometimes this won&#39;t work though - like if you don&#39;t even have the source code! It also doesn&#39;t work when automating a program that actually has a bit of a dialog with the user, which you need to simulate through node. No worries though - writing to stdin is pretty straightforward, especially if you don&#39;t need to wait for any output from the child process first (if you do, check out <code>spawn</code> instead of <code>execFile</code> by the way).</p>
+<h4 id="building-the-c-example">Building the C++ example</h4>
+<p>In <code>cpp/standalone_usr</code> I&#39;ve created a new entry point for a C++ program that simply asks the user for the <code>under</code> parameter the prime sieve algorithm needs.</p>
+<pre><code class="lang-cpp">#include &lt;iostream&gt;
+#include &lt;stdio.h&gt;
+#include &quot;prime_sieve.h&quot;
+using namespace std;
+
+int main(int argc, char ** argvs) {
+    int max;
+    cout &lt;&lt; &quot;Please enter the maximum number:  &quot;;
+    cin  &gt;&gt; max;
+    generate_primes(max, stdout);
+}
+</code></pre>
+<p>It&#39;s including the very same prime_sieve.h file as the code in Scenario 1, and is build with a strikingly similar <code>binding.gyp</code> file. Go ahead and build that with <code>node-gyp configure build</code> at the terminal from <code>cpp/standalone_usr</code>.</p>
+<h4 id="writing-to-stdin-to-automate-from-node-js">Writing to stdin to automate from Node.js</h4>
+<p>Now we&#39;ve got a new executable build, which asks for input from a live user. We can now drop yet another route into our web app to automate this one too. In <code>web/index.js</code> we&#39;ll create another type entry:</p>
+<pre><code class="lang-javascript">var types = [
+  {
+    title: &quot;pure_node&quot;,
+    description: &quot;Execute a really primitive &quot; + 
+          &quot;implementation of prime sieve in Node.js&quot;
+  },
+  {
+    title: &quot;standalone_args&quot;,
+    description: &quot;Execute C++ executable as a &quot; + 
+                &quot; child process, using command line &quot;+
+                &quot; args and stdout.  &quot; + 
+                &quot; Based on /cpp/standalone_stdio&quot;
+  },
+  {
+    title: &quot;standalone_usr&quot;,
+    description: &quot;Execute C++ executable as a &quot; + 
+                &quot; child process, using direct user input.  &quot;+
+                &quot; Based on /cpp/standalone_usr&quot;
+  }];
+</code></pre>
+<p>And we&#39;ll create a new route at <code>web/routes/standalone_usr.js</code>. In this file, our code will no longer pass <code>under</code> as a command line argument however, instead we&#39;ll write to stdin:</p>
+<pre><code class="lang-javascript">router.post(&#39;/&#39;, function(req, res) {
+    var execFile = require(&#39;child_process&#39;).execFile
+    // notice we&#39;re pointing this to the new executable
+    var program = 
+      &quot;../cpp/standalone_usr/build/Release/standalone_usr&quot;;
+
+    var under = parseInt(req.body.under);
+    // execFile will return immediately.
+    var child = execFile(program, [],
+      function (error, stdout, stderr) {
+        // This function is executed once the program ends
+        var primes = stdout.split(&quot;\n&quot;).slice(0, -3)
+                       .map(function (line) {
+                           return parseInt(line);
+                       });
+
+        res.setHeader(&#39;Content-Type&#39;, &#39;application/json&#39;);
+        res.end(JSON.stringify({
+          results: primes
+        }));
+
+        console.log(&quot;Primes generated from &quot; + type);
+    });
+
+    // now we write &quot;under&quot; to stdin so the C++ program 
+    // can proceed (it&#39;s blocking for user input)
+
+    child.stdin.setEncoding(&#39;utf-8&#39;);
+    child.stdin.write(under + &quot;\n&quot;);
+
+    // Once the stdin is written, the C++ completes 
+    // and the callback above is invoked.
+});
+</code></pre>
+<p>By now you probably have the idea.. fire up the web app again and now you&#39;ll have a third entry at the start page - go ahead and test it out!</p>
+<h3 id="scenario-3-automating-a-file-based-c-program">Scenario 3: Automating a file-based C++ program</h3>
+<p>The last scenario I&#39;ll go over is where the program you are automating takes its input from a file, and dumps its output to a another file. Of course, your scenario might be a combination of the three scenarios discussed here - and your scenario might involved a fixed filename for input/output, or a user specified (via stdin, or command line arguments). Whatever your situation, you&#39;ll likely be able to apply what&#39;s here.</p>
+<h4 id="modifications-to-prime-sieve-to-use-files">Modifications to prime sieve to use files</h4>
+<p>So the first step is to shape the prime sieve into something resembling a file-based program. If you take a look at <code>cpp/standalone_flex_file</code>, I&#39;ve created a third entry point for prime sieve that accepts input/output filenames along the command line. The input file is assumed to simply have &quot;under&quot; on the first line. The output file will receive the same lines of results as previously went to stdin.</p>
+<pre><code class="lang-javascript">#include &lt;iostream&gt;
+#include &lt;stdio.h&gt;
+#include &quot;prime_sieve.h&quot;
+
+using namespace std;
+
+// Simulating a legacy app that reads
+// it&#39;s input from a user-specified file via command line
+// arguments, and outputs to a similarly specified file.
+int main(int argc, char ** argvs) {
+    FILE * in = fopen(argvs[1], &quot;r&quot;);
+    int i;
+    fscanf (in, &quot;%d&quot;, &amp;i);
+    fclose(in);
+
+    FILE * out = fopen(argvs[2], &quot;w&quot;);
+    generate_primes(i, out);
+    fprintf(stdout, &quot;Output saved in %s\n&quot;, argvs[2]);
+    fclose(out);
+}
+</code></pre>
+<p>We can build this C++ program by issuing the familiar <code>node-gyp configure build</code> from <code>cpp/standalone_flex_file</code>. This will generate a target executable we can use from node.</p>
+<h4 id="dealing-with-file-based-program-on-the-web">Dealing with file-based program on the web</h4>
+<p>Before diving into the Node.js route for this scenario, lets talk about the challenge involved in a file-based program. Most applications never meant for the web will read a specified input file and write to an output file as if the application is the only thing running... and as if it&#39;s not running alongside another instance of the same program! This made sense when these applications were being run manually - but if you are placing them on the web you can easily have multiple simultaneous requests (from different browsers) coming in at the same time. It&#39;s critical that these simultaneous executions of your legacy C++ program don&#39;t collide with each other - you need to ensure they are reading from and writing to their own distinct files!</p>
+<p>When you don&#39;t have access to the legacy source code, this can be easier said than done, especially if the app does not let the user specify the files (i.e. they are hardcoded in the program!). If they are hardcoded, but relative file paths, then you could play games with the current working directory, or create a copy of the executable (or a link to it) in a temporary directory on each incoming web requests. It&#39;s costly performance-wise, but it works. If the files paths are hard coded to absolute paths, you have quite a problem (find the code!).</p>
+<p>I&#39;ve simulated the easiest (but most common) situation, where the input and output files can be specified by the user (in this case, via command line arguments). All we need to do is make sure each web request that launches the C++ app picks unique filenames - and I usually do this by creating temporary directories on each web request, placing the input/output files within the temporary directory. This shields each running instance from the others, while keeping the input/output names consistent.</p>
+<p>So now lets jump the Node.js route. At the top of <code>web/routes/standalone_file.js</code> I&#39;ve required the <code>temp</code> module, which I use to handle the creation of temporary directories and files. It drops the temporaries in the appropriate location for your platform.</p>
+<pre><code class="lang-javascript">var temp = require(&#39;temp&#39;);
+</code></pre>
+<p>Below is the route code found in <code>web/routes/standalone_file.js</code>.</p>
+<pre><code class="lang-javascript">router.post(&#39;/&#39;, function(req, res) {
+    var execFile = require(&#39;child_process&#39;).execFile
+    var program = 
+      &quot;../cpp/standalone_flex_file/build&quot;+
+      &quot;/Release/standalone_flex_file&quot;;
+
+    var under = parseInt(req.body.under);
+
+    // Create a temporary directory, with 
+    // node_example as the prefix
+    temp.mkdir(&#39;node_example&#39;, function(err, dirPath) {
+      // build full paths for the input/output files
+      var inputPath = path.join(dirPath, &#39;input.txt&#39;);
+      var outputPath = path.join(dirPath, &#39;output.txt&#39;);
+
+      // write the &quot;under&quot; value to the input files
+      fs.writeFile(inputPath, under, function(err) {
+        if (err) throw err;
+
+        // once the input file is ready, execute the C++ 
+        // app with the input and output paths 
+        // specified on the command line
+        var primes = execFile(program, 
+          [inputPath, outputPath], function(error) {
+
+            if (error ) throw error;
+            fs.readFile(outputPath, function(err, data) {
+              if (err) throw err;
+              var primes = data.toString().split(&#39;\n&#39;)
+                              .slice(0, -3)
+                              .map(function (line) {
+                                  return parseInt(line);
+                              });
+              res.setHeader(&#39;Content-Type&#39;, &#39;application/json&#39;);
+              res.end(JSON.stringify({
+                results: primes
+              }));
+
+              exec(&#39;rm -r &#39; + dirPath, function(error) {
+                if (error) throw error;
+                console.log(&quot;Removed &quot; + dirPath);
+              })
+          });
+        });
+      });
+    });
+});
+</code></pre>
+<p>The above code first creates the temporary directory. It then writes the input file and launches the child process with the input and output file paths as command line arguments. Once the process completes, we read the output file to get the results, serving it back to the browser just like before. Finally, we clean up the temporary files by removing parent directory. This is important, since even though the <code>temp</code> module allows for tracking and automatic deletion of temporary files, it only cleans things up when the process terminates. Since this is a web app, we would (hopefully!) be waiting a long time for this to happen.</p>
+<p>As you can see, this code would benefit from better control flow patterns(async, promises, etc). I&#39;m trying to stick to the bare minimum, I&#39;ll leave that to you :).</p>
+<p>Aside from the route above, I&#39;ve added this final scenario to the <code>types</code> array in <code>web/index.js</code> and you can start your web app and test this one out just like the others.</p>
+<h2 id="calling-native-c-from-node-js-as-a-dll">Calling Native C++ from Node.js as a DLL</h2>
+<p>This section focuses entirely on compiling your C++ as a shared library or DLL, and calling that code from Node.js using <a href="">FFI</a>. I&#39;ll also discuss some of the common issues you can run into when trying to convert a legacy C++ application into a callable shared library.</p>
+<p><em>Why use a Shared Library / DLL?</em></p>
+<p>When automating a C++ application, you have the advantage of having really clean separation between your JavaScript and C++. Automation also allows you to integrate with just about <em>every</em> programming language - as long as it can be automated through stdin/stdout or input and output files. One disadvantage though is that there is really only one entry point to your C++ - main. You could certainly develop complex coordination between your C++ and Node applications, but automation works best when you just want to send some input to C++ and wait for the results.</p>
+<p>Often you want fine-grain control and coordination between Node.js and C++. You&#39;d like to be able to call into C++ through <em>functions</em>, not just an executable&#39;s entry point. Further, you&#39;d like to be able to get output from those functions as return values (or reference parameters), not by harvesting output from stdout or some output file.</p>
+<p>A shared library (or DLL) is an excellent solution in this situation. If your C++ is already in a DLL, then you can get started right away - but if not, you can generally compile your legacy code into a DLL fairly easily - you just need to figure out which methods/functions you wish to expose to callers. Once you have a DLL, utilizing the interface through Node.js is pretty easy (read on!).</p>
+<p>Converting a legacy C or C++ application into a DLL can be a good integration choice when automation is too cumbersome. It also lets you avoid the intricacies of developing for Node using the V8 API, which isn&#39;t always trivial.</p>
+<p>For this particular section, checkout the <strong>dll</strong> tag</p>
+<p>Once you&#39;ve checked out the code, take a moment to survey the directory structure I&#39;ve setup. The <code>/cpp</code> directory is where I&#39;ve put all the C++ applications developed for the automation examples, with the shared source for prime number generation in <code>/cpp/prime4standalone</code>. Now we&#39;ll need to modify the prime number code to allow it to work well as a DLL, and I&#39;ll put that code in <code>/cpp/prime4lib</code>. As was the case before, the sample web application is in <code>web</code>. We&#39;ll just be adding one route (<code>ffi</code>) in this post - for the shared library implementation.</p>
+<h3 id="preparing-the-c-as-a-shared-library">Preparing the C++ as a Shared Library</h3>
+<p>If you are trying to integrate an existing shared library into Node.js, then you can basically skip this section - you are all set! If you have some legacy C++ code that was originally a standalone app (or part of one), you need to prepare your code to work as a shared library first. The major considerations when doing this is defining your API - the set of functions that should be callable by the host code (in our case, Node.js). Perhaps your C++ already is organized such that these functions are ready to go - but you may need to do a bit of reorganization.</p>
+<p>Another main consideration is how you&#39;ll get your C++ code&#39;s output. For example, when automating, I ran a bunch of standalone primesieve applications from Node - each one either outputted prime numbers directly to standard out or to an output file. We don&#39;t want this for shared libraries though - we want the output <em>returned</em> to the caller. To do this, you might need to get a bit creative - I&#39;ll show you how I&#39;ve done it in the section below.</p>
+<p>Here&#39;s the API I want my shared library to support. Actually, it&#39;s not much of an API - it&#39;s just one function!</p>
+<pre><code class="lang-cpp">int getPrimes(int under, int primes[]);
+</code></pre>
+<p>The first parameter represents the maximum value - such that we&#39;ll find all prime numbers <em>under</em> this value. The prime numbers will be stuffed into the second parameter - an array. It is assumed that this array has enough space to store all the generated prime numbers (<code>under</code> is a good &quot;maximum&quot; size.). The function will return how many prime numbers were actually found.</p>
+<h4 id="capturing-the-output">Capturing the output</h4>
+<p>Now let&#39;s look at the code from the automation example. Inside <code>/cpp/prime4standalone</code>, the <code>primesieve.c</code> file had one main function:</p>
+<pre><code class="lang-cpp">int generate_args(int argc, char * argv[], FILE * out)
+</code></pre>
+<p>It also has an adapter function which replaces the argc/argv parameters with <code>under</code>. In both cases, notice that the output is being sent to <code>out</code> using <code>fprintf</code>. For our API, we want the output to be placed inside an array.</p>
+<p>One approach might be to just start hacking away at the underlying primesieve implementation, replacing the <code>fprintf</code> calls with some code to load up an array. This can work (especially if this is new C++ code, or at least C++ that is fairly straightforward), but it&#39;s not particularly scalable (what if you have a more complex set of actions you need to perform to capture the output?). I find making modifications to legacy programs goes best when you keep your changes simple - and that&#39;s what I&#39;ll do here.</p>
+<h4 id="data-exchange-utility-class-useable-from-c-or-c-">Data Exchange utility class useable from C or C++</h4>
+<p>As with most things in life, keeping one thing simple often makes something else more complicated. My goal is to replace each <code>fprintf</code> statement in the existing primeseive code with a similarly simple function:</p>
+<pre><code class="lang-cpp">void pass(int prime);
+</code></pre>
+<p>I want that send function to be able to add the prime number into an array, which is sent in from the calling Node.js code:</p>
+<pre><code class="lang-cpp">// called from Node.js - calls to send should add prime to primes
+int getPrimes(int under, int primes[]);
+</code></pre>
+<p>This seems simple enough, we could achieve something like this by making send a member method of an object that could have a reference to the array. This gets complicated by the fact that primeseive is straight C code though.</p>
+<p>Let&#39;s start with the data exchange class, found in <code>exchange.h</code>:</p>
+<pre><code class="lang-cpp">#define _exchangeclass
+#include &lt;iostream&gt;
+#include &lt;functional&gt;
+using namespace std;
+
+class exchange {
+public:
+    exchange(const std::function&lt;void (void * )&gt; &amp; c) {
+        this-&gt;callback = c;
+    }
+    void send(int data){
+       this-&gt;callback(&amp;data);
+    }
+private:
+    std::function&lt;void (void * )&gt; callback;
+};
+
+#include &quot;c_exchange.h&quot;
+</code></pre>
+<p>The first thing you&#39;ll note is that the class itself does not contain a reference to an array. To keep it general, I am simply having it hold a callback function - which will be responsible for storing the given value to the array in this example, but could do anything at all.</p>
+<p>Notice the last line - I&#39;m including a separate header file called <code>c_exchange.h</code>. The <code>send</code> member of exchange is not callable from C code (primesieve), and as you might have guessed, <code>c_exchange.h</code> contains a function to get around this problem. Lets take a look inside:</p>
+<pre><code class="lang-cpp">#ifdef _exchangeclass
+extern &quot;C&quot; {
+#endif
+
+void pass(void * exchanger, int data);
+
+#ifdef _exchangeclass
+}
+#endif
+</code></pre>
+<p>First off, this header is going to be included by C++ and C code. <code>exchange.h</code>, which declares the exchange class defines the <code>exchangeclass</code> symbol - so the first line is just detecting if that symbol is already there. If it is, the <code>pass function</code> - which will be called from C - is wrapped in an <code>extern</code> block.</p>
+<p>The <code>pass</code> function accepts a pointer to an exchange object (<code>void *</code>, since the <code>exchange</code> class won&#39;t be visible to C callers). Within the definition, found in <code>exchange.cpp</code>, we see that this pointer is cast back to an <code>exchange</code> object and the send method is called:</p>
+<pre><code class="lang-cpp">void pass(void * exchanger, int data) {
+    exchange * xchg = (exchange * ) exchanger;
+    xchg-&gt;send(data);
+}
+</code></pre>
+<p>It&#39;s a bit elaborate, but the <code>exchange</code> class and it&#39;s standalone <code>pass</code> helper function can be dropped into nearly any existing C++ or C legacy program, simply by getting a pointer to an <code>exchange</code> object into the legacy code and replacing output calls with <code>pass</code>. Let&#39;s do this with <code>primesieve.c</code>.</p>
+<h4 id="modifying-primesieve-to-use-passing-function">Modifying primesieve to use passing function</h4>
+<p>Inside <code>/cpp/prime4lib</code> I have a modified <code>primesieve.h</code> and <code>primesieve.c</code>. The <strong>old</strong> <code>primesieve.h</code> defined the following two functions:</p>
+<pre><code class="lang-cpp">// primeseive.h for standalone programs
+int generate_args(int argc, char * argv[], FILE * out);
+int generate_args(int under, FILE * out);
+</code></pre>
+<p>Now I&#39;ve replaced these with the following signatures:</p>
+<pre><code class="lang-cpp">// primesieve.h for library calls
+int generate_args(int argc, char * argv[], void * out);
+int generate_args(int under, void * out);
+</code></pre>
+<p>Inside <code>primeseive.c</code> the old standalone code had a <code>#define</code> setup to use fprintf, on line 43 (Note, I am not the author of the original <a href="http://wwwhomes.uni-bielefeld.de/achim/prime_sieve.html">primsieve code</a> - I do not know the history or intent behind the elaborate printing scheme. As with most legacy apps, sometimes those questions are better left un-asked!). We now replace the <code>fprintf(out, UL&quot;\n&quot;,x)</code> call with a call to <code>pass(out, x)</code>.</p>
+<h4 id="the-shared-library-entry-point">The shared library entry point</h4>
+<p>Now we have a <code>primesieve.h/primeseive.c</code> implementation that uses <code>pass</code>, we just need to create a C++ entry point that creates an <code>exchange</code> object and calls the primesieve code. I have done this in <code>/cpp/lib4ffi/primeapi.h</code> and <code>/cpp/lib4ffi/primeapi.cpp</code>.</p>
+<p><code>primeapi.h</code> is the shared library entry point, it has the declaration for the library API function I wished for up above:</p>
+<pre><code class="lang-cpp">extern C {
+    int getPrimes(int under, int primes[]);
+}
+</code></pre>
+<p>The implementation uses the <code>exchange</code> class, with a lambda function as the callback. As you can see, the lambda function adds whatever data is sent to the array.</p>
+<pre><code class="lang-cpp">int getPrimes(int under, int primes[]) {
+  int count = 0;
+  exchange x(
+        [&amp;](void * data) {
+            int * iptr = (int * ) data;
+            primes[count++] = * iptr;
+        }
+  );
+
+  generate_primes(under, (void*)&amp;x);
+  return count;
+}
+</code></pre>
+<p>Now, when we call <code>generate_primes</code>, which is defined in <code>primesieve.h</code>, we pass in a reference to our exchange. Within <code>primesieve.c</code> that reference to the exchange object is called <code>out</code>. All calls to <code>pass(out, x)</code> in <code>primesieve.c</code> result in the pointer <code>out</code> being cast as an <code>exchange</code> object (in <code>exchange.cpp</code>), and the callback (the lambda) is fired. <em>The end result is that all values computed by <code>primesieve</code> are found in the <code>primes</code> array.</em></p>
+<h3 id="building-the-shared-library-with-gyp">Building the Shared Library with gyp</h3>
+<p>We need to build our shared library now. Luckily, the very same toolset we are used to - <code>node-gyp</code> - can help us here as well. Inside <code>/cpp/lib4ffi</code> you&#39;ll find another config file named <code>binding.gyp</code>. It&#39;s quite similar to the gyp files found in the standalone examples from the automation examples, but it links in the primesieve files from <code>/cpp/prime4lib</code> instead of <code>/cpp/prime4standalone</code> and it&#39;s build type is <code>shared_library</code> instead of <code>executable</code>.</p>
+<p>Build the shared library by issuing the familiar <code>node-gyp configure build</code> from <code>cpp/lib4ffi</code>. This will generate a target shared library we can use from node. The shared library will be in <code>/cpp/lib4ffi/build/Release</code> - with an extension specific to your operating system (ie. prime.dylib on OS X, prime.dll on Windows).</p>
+<h3 id="calling-primelib-with-ffi">Calling primelib with FFI</h3>
+<p>All that work and we have a shared library - now let&#39;s call it from Node.js. To do this, we&#39;ll use Node&#39;s Foriegn Function Interface (<a href="https://github.com/node-ffi/node-ffi">node-ffi</a>). node-ffi is a Node.js addon for loading and calling dynamic libraries using pure JavaScript. You can find an excellent tutorial at <a href="https://github.com/node-ffi/node-ffi/wiki/Node-FFI-Tutorial">https://github.com/node-ffi/node-ffi/wiki/Node-FFI-Tutorial</a> which outlines it some more detail. In particular, checkout the <a href="https://github.com/node-ffi/node-ffi/wiki/Node-FFI-Tutorial#async-library-calls">async</a> section, which shows you how to easily call shared library methods in their own threads using libuv so you don&#39;t block your main Node.js event loop!</p>
+<p>One of the key parts of using <code>node-ffi</code> is mastering the <code>ref</code> module to build native data types on top of the Node.js <code>Buffer</code> object (the subject of Appendix B). These datatypes (int, arrays, etc.) allow you to interact with native functions found inside a shared library.</p>
+<p>Our API has but one call, and it uses two integers and an integer array for return types and parameters:</p>
+<pre><code class="lang-cpp">int getPrimes(int under, int primes[]);
+</code></pre>
+<p>Simple integers don&#39;t require us to do much (node-ffi automatically converts to and from the JavaScript number type), but we do need to allocate an integer array to hold our results. Here&#39;s how we do it with <code>ref</code></p>
+<pre><code class="lang-javascript">var ArrayType = require(&#39;ref-array&#39;);
+var IntArray = ArrayType(int);
+var a = new IntArray(10); // creates an integer array of size 10
+</code></pre>
+<p>Next, we use the <code>ref</code> data type identifiers and <code>node-ffi</code> to define the interface to our library:</p>
+<pre><code class="lang-javascript">var ffi = require(&#39;ffi&#39;)
+var ref = require(&#39;ref&#39;)
+var int = ref.types.int
+
+var libprime = 
+  ffi.Library(&#39;../cpp/lib4ffi/build/Release/prime&#39;, {
+  &#39;getPrimes&#39;: [ int, [ int, IntArray] ]
+})
+</code></pre>
+<p>The <code>libprime</code> variable now represents our getPrimes function found in the shared library we created in the previous section. We can call the function, and it&#39;s return type can be saved in a normal JavaScript number variable. We can use the returned count to extract the prime numbers out of the IntArray - giving us all the prime numbers under 10.</p>
+<pre><code class="lang-javascript">var count = libprime.getPrimes(under, a);
+var primes = a.toArray().slice(0, count);
+</code></pre>
+<h3 id="putting-it-all-together">Putting it all together</h3>
+<p>Now that we have a shared library, and the Node.js code that can call it, let&#39;s wrap it all up into it&#39;s own route inside our growing web app example. Inside the <code>/web/index.js</code> file we are going to add another entry for a route called <code>ffi</code>.</p>
+<pre><code class="lang-javascript">var types = [
+  {
+    title: &quot;pure_node&quot;,
+    description: &quot;Execute a really primitive &quot; + 
+        &quot; implementation of prime sieve in Node.js&quot;
+  },
+  ... the entries for the automation example routes...
+  {
+    title: &quot;ffi&quot;,
+    description: &quot;Using Node Foreign Function &quot; + 
+        &quot; Interface (ffi) to call C++ code.  Based on /cpp/lib4ffi&quot;
+  }
+  ];
+</code></pre>
+<p>That type array is used to create the routes by looking for a file named after each <code>title</code> property in the <code>web/routes/</code> directory:</p>
+<pre><code class="lang-javascript">types.forEach(function (type) {
+    app.use(&#39;/&#39;+type.title, require(&#39;./routes/&#39; + type.title));
+});
+</code></pre>
+<p>Now let&#39;s add our route in <code>/web/routes/ffi.js</code>. The relevant post handler is below, and it looks a lot like the <code>ffi</code> example above:</p>
+<pre><code class="lang-javascript">router.post(&#39;/&#39;, function(req, res) {
+    var ffi = require(&#39;ffi&#39;)
+    var ref = require(&#39;ref&#39;)
+    var ArrayType = require(&#39;ref-array&#39;)
+    var int = ref.types.int
+    var IntArray = ArrayType(int)
+
+    // The under parameter is coming from 
+    /// the user input (form)
+    var under = parseInt(req.body.under);
+    var a = new IntArray(under);
+
+    // Create the interface to our shared library
+    var libprime = ffi.Library(
+      &#39;../cpp/lib4ffi/build/Release/prime&#39;, {
+        &#39;getPrimes&#39;: [ int, [ int, IntArray] ]
+    })
+
+    // call the prime number code and extract 
+    // the array of primes.
+    var count = libprime.getPrimes(under, a);
+    var primes = a.toArray().slice(0, count);
+
+    // send the primes right back to the 
+    // browser for display
+    res.setHeader(&#39;Content-Type&#39;, &#39;application/json&#39;);
+    res.end(JSON.stringify({
+      results: primes
+    }));
+});
+</code></pre>
+<p>Now fire up your web app by typing <code>node index.js</code> from <code>/web</code> and choose the ffi option. Type in 100 and click &quot;submit&quot; and you should see the prime numbers under 100 on your screen, this time generated by the DLL/shared library.</p>
+<h2 id="building-an-asynchronous-c-addon-for-node-js-using-nan">Building an Asynchronous C++ Addon for Node.js using Nan</h2>
+<p>This entire book is dedicated to C++ addons, so this section serves as yet another example - but it&#39;s a great where to compare a lot of alternatives. After reading this book, you are probably predisposed to taking the addon route, but there are indeed good reason <em>not to</em>. If you don&#39;t have access to the source code of your legacy C++ application, then automation is your best option - you won&#39;t be able to create the type of Node.js addon I&#39;ll describe here. Of course, if your legacy code is <em>not C or C+++</em>, then automation might very well be your best bet as well (although there are indeed bindings from Node to other languages as well). If your C/C++ code is already in a dll or shared library, then of course it likely makes the most sense to use FFI - as described above.</p>
+<p>For situations where you have complete access (and are comfortable editing) the C/C++ you are targeting though, creating a native addon is likely to be the most powerful approach. First, if your code is already reasonably well organized (clearly defined entry and exit/return points), it won&#39;t be too difficult to create the addon itself - especially using Nan. Second, addons are quite flexible - they can be blocking/synchronous or asynchronous, and support most use cases (i.e. passing/returning objects, arrays, etc.). Finally, when you create a Node.js addon, your JavaScript code is cleaner than when using the automation or shared library approaches - as you&#39;ll see by comparing JavaScript code in this post with the other posts in the series.</p>
+<p>For this particular section, checkout the <strong>addon</strong> tag</p>
+<h3 id="addon-code-blocking">Addon Code - blocking</h3>
+<p>Lets create our C++ addon file - <code>/cpp/nodeprime_sync/addon.cpp</code>. We are going to crate a wrapper around the <code>getPrimes</code> function found in <code>/cpp/prime4lib</code> and register it with V8 using macros defined in V8 and Nan. First, we&#39;ll include the headers for a primesieve code, the exchange class we use to collect data from the primeieve code, and V8/Nan:</p>
+<pre><code class="lang-cpp">#include &lt;nan.h&gt;  // includes v8 too
+#include &lt;functional&gt;
+#include &lt;iostream&gt;
+
+// class to hold values returned from primesieve
+#include &quot;exchange.h&quot;  
+#include &quot;prime_sieve.h&quot;
+
+// bring in the required namespaces
+using namespace Nan;
+using namespace v8;
+using namespace std;
+</code></pre>
+<p>Now let&#39;s create a function that will do the calculation. Much of it is familiar from the shared library post, we&#39;ll use the <code>exchange</code> class to collect output from primesieve. The main difference is that we&#39;ll be collecting the data into a V8 Local Array, which can be returned wholesale to the calling JavaScript code. Before diving into the C++, here&#39;s how the function will (almost) be used in JavaScript:</p>
+<pre><code class="lang-javascript">var primes = primenode.getPrimes(under);
+// primes is now the array of all prime numbers less than under
+</code></pre>
+<p>Here&#39;s the C++:</p>
+<pre><code class="lang-cpp">NAN_METHOD(CalculatePrimes) {
+    Nan:: HandleScope scope;
+
+    int under = To&lt;int&gt;(info[0]).FromJust();
+    v8::Local&lt;v8::Array&gt; results = New&lt;v8::Array&gt;(under);
+
+    int i = 0;
+    exchange x(
+        [&amp;](void * data) {
+            Nan::Set(results, i, 
+              New&lt;v8::Number&gt;(*((int *) data)));
+            i++;
+       });
+
+    generate_primes(under, (void*)&amp;x);
+
+    info.GetReturnValue().Set(results);
+}
+</code></pre>
+<p>After we extract the necessary arguments and create an array for our results, we work with exchange class. We are creating a callback, which primesieve (<code>generate_primes</code>) will call each time a prime number is found. Here, instead of adding each prime number to a vector, we are adding it to the local V8 array we have declared. Note that the array will be &quot;oversized&quot;, since if &quot;under&quot; is 100 there is clearly not 100 prime numbers less than 100! Each element that is not explicitly set will be set to <code>undefined</code> when accessed through JavaScript later. We now call the primesieve implementation, which executes and incrementally fills up the array with primes through the exchange object.</p>
+<pre><code class="lang-cpp">int i = 0;
+exchange x(
+    [&amp;](void * data) {
+        Nan::Set(results, i, New&lt;v8::Number&gt;(*((int *) data)));
+        i++;
+   });
+
+generate_primes(under, (void*)&amp;x);
+</code></pre>
+<p>Finally, we need to register this function (<code>CalculatePrimes</code>) with V8, which we do at the bottom of the file:</p>
+<pre><code class="lang-cpp">NAN_MODULE_INIT(Init) {
+    Nan::Set(target, 
+      New&lt;String&gt;(&quot;getPrimes&quot;).ToLocalChecked(),
+      GetFunction(
+          New&lt;FunctionTemplate&gt;(CalculatePrimes))
+          .ToLocalChecked());
+}
+
+NODE_MODULE(addon, Init)
+</code></pre>
+<h4 id="building-the-addon">Building the addon</h4>
+<p>We can use a familiar <code>binding.gyp</code> file to build the addon:</p>
+<pre><code class="lang-cpp">{
+  &quot;targets&quot;: [
+    {
+      &quot;target_name&quot;: &quot;nodeprime&quot;,
+      &quot;sources&quot;: [ &quot;../prime4lib/prime_sieve.c&quot;, 
+                   &quot;../prime4lib/exchange.cpp&quot;, 
+                   &quot;addon.cpp&quot;],
+      &quot;cflags&quot;: [&quot;-Wall&quot;, &quot;-std=c++11&quot;],
+      &quot;include_dirs&quot; : [&#39;../prime4lib&#39;, 
+        &quot;&lt;!(node -e \&quot;require(&#39;nan&#39;)\&quot;)&quot;],
+      &quot;conditions&quot;: [ 
+        [ &#39;OS==&quot;mac&quot;&#39;, { 
+            &quot;xcode_settings&quot;: { 
+                &#39;OTHER_CPLUSPLUSFLAGS&#39; : 
+                  [&#39;-std=c++11&#39;,&#39;-stdlib=libc++&#39;], 
+                &#39;OTHER_LDFLAGS&#39;: [&#39;-stdlib=libc++&#39;], 
+                &#39;MACOSX_DEPLOYMENT_TARGET&#39;: &#39;10.7&#39; } 
+            }
+        ] 
+      ] 
+    }
+  ]
+}
+</code></pre>
+<p>There are a few new things in this bindings file. First, notice there is no &quot;type&quot; property - by default node-gyp build a Node.js addon - so no need to specify anything. I&#39;ve defined the target to be <code>nodeprime</code>, and the output of the build will end up being <code>nodeprime.node</code>. In addition to specifying the build files, and the include directory for primesieve, I&#39;ve also added Nan to the set of include directories - utilizing a node shell command. The rest (conditions) is the same compiler stuff from the previous posts, mainly to enable C++ 11.</p>
+<p>To build, do a <code>node-gyp configure build</code> from <code>/cpp/nodeprime_sync</code>. The <code>nodeprime.node</code> file will be located in <code>/cpp/nodeprimes_sync/build/Release</code> - which we&#39;ll link to in a moment.</p>
+<h4 id="calling-from-javascript">Calling from JavaScript</h4>
+<p>Now comes the easy part! First, we need to require the module. We specify a path in the require command</p>
+<pre><code class="lang-javascript">var nodeprime = require(&quot;[relative path to code]&quot; + 
+  + &quot;/cpp/nodeprime_sync/build/Release/nodeprime&quot;)
+</code></pre>
+<p>Now to get prime numbers under 100, just call the function:</p>
+<pre><code class="lang-javascript">var retval = primes.getPrimes(100);
+console.log(retval);
+</code></pre>
+<p><code>retval</code> is now just a JavaScript array - however you&#39;ll see that there are 100 elements (mostly empty), since we over-allocated in C++. We can get rid of that pretty easily though:</p>
+<pre><code class="lang-javascript">var retval = primes.getPrimes(100)
+            .filter(function(val) { 
+                return val != undefined
+            });
+console.log(retval);
+</code></pre>
+<h3 id="addon-code-non-blocking">Addon Code - non-blocking</h3>
+<p>Synchronous code is a real problem if you are integrating a web application. If the JavaScript code above were executed in response to an HTTP request, no other requests can be processed until the array is returned. The way we&#39;ve coded the addon, the C++ code is executing in the Node.js event loop. It would be far better to use an asynchronous model!</p>
+<p>I&#39;ve created the asynchronous addon in <code>/cpp/nodeprime</code>. Within that folder, you&#39;ll see a package.json file (you need to do a <code>npm install</code>) that sets up Nan. You&#39;ll also see a similar binding.gyp file as before, and another addon.cpp file that contains the asynchronous addon.</p>
+<p>First off, inside <code>addon.cpp</code>, you&#39;ll see the top part (includes/namespaces) and bottom part (<code>NAN_METHOD</code> and <code>NODE_MODULE</code>) are exactly the same. The change now is how <code>CalculatePrimes</code> is implemented, and the addition of the PrimeWorker class, which inherits <code>AsyncWorker</code> and contains all the logic for doing the work. Before diving in, let&#39;s look at what the calling JavaScript code will eventually look like:</p>
+<pre><code class="lang-javascript">// Asynchronously get all prime numbers under 100
+nodeprime.getPrimes(100, function (err, primes) {
+       console.log(primes);
+});
+</code></pre>
+<p>Notice that <code>getPrimes</code> now gets two parameters, &quot;under&quot; and a callback function that receives the result when it&#39;s complete. That&#39;s where we&#39;ll start in the C++, because we need to get a reference to that callback so we can invoke it:</p>
+<pre><code class="lang-cpp">NAN_METHOD(CalculatePrimes) {
+    int under = To&lt;int&gt;(info[0]).FromJust();
+    Callback *callback = new Callback(info[1].As&lt;Function&gt;());
+
+    AsyncQueueWorker(new PrimeWorker(callback, under));
+}
+</code></pre>
+<p>Notice now that <code>CalculatePrimes</code> extracts two parameters - under and the callback. Now, instead of actually computing the prime numbers, we create a <code>AsyncQueueWorker</code> with an instance of our <code>PrimeWorker</code> class. Our <code>PrimeWorker</code> class is created with the callback and under parameter, since they will be used to process the work. <code>AsyncQueueWorker</code> returns <em>immediately</em> - it simply queues the worker. The C++ now returns control right back to the calling JavaScript code.</p>
+<p>Now let&#39;s look at what is actually going on inside the <code>PrimeWorker</code> class. The constructor is pretty simple - most importantly it initializes the base class <code>AsyncWorker</code> with the callback sent in from JavaScript. The <code>under</code> value is also saved in <code>PrimeWorker</code>, and the primes vector that will hold our prime number results is initialized.</p>
+<pre><code class="lang-cpp">PrimeWorker(Callback *callback, int under)
+        : AsyncWorker(callback), under(under), primes(0) {}
+</code></pre>
+<p>Here&#39;s where there is a big difference from the synchronous addon - we&#39;re going to save the prime numbers in a standard C++ vector as opposed to directly into a V8 Local Array. This is because the prime numbers are being calculated in a worker thread, not in the event loop.</p>
+<p>Once we call <code>AsyncQueueWorker</code> from <code>CalculatePrimes</code>, libuv will dispatch our <code>PrimeWorker</code> object onto a worker thread and call it&#39;s <code>Execute</code> method - which is shown below:</p>
+<pre><code class="lang-cpp">void Execute () {
+  exchange x(
+    [&amp;](void * data) {
+      primes.push_back(*((int *) data));
+    }
+  );
+
+  generate_primes(under, (void*)&amp;x);
+}
+</code></pre>
+<p>This is pretty much <em>exactly</em> what the synchronous version of <code>CalculatePrimes</code> did - it&#39;s just being executed in the worker thread. Once <code>Execute</code> completes, libuv will automatically call the <code>HandleOKCallback</code> methods on <code>PrimeWorker</code> - in the event loop.</p>
+<pre><code class="lang-cpp">void HandleOKCallback () {
+  Nan:: HandleScope scope;
+
+  v8::Local&lt;v8::Array&gt; results = New&lt;v8::Array&gt;(primes.size());
+  int i = 0;
+  for_each(primes.begin(), primes.end(),
+    [&amp;](int value) {
+      Nan::Set(results, i, New&lt;v8::Number&gt;(value));
+      i++;
+    });
+
+
+  Local&lt;Value&gt; argv[] = { Null(), results };
+  callback-&gt;Call(2, argv);
+}
+</code></pre>
+<p>Since this method is actually called in the Node event loop thread, we can allocate a V8 Local Array that will be returned back to JavaScript. We create a scope, initialize an array (this time, exactly the right size, since we already have the vector with the primes). Next we use a <code>for_each</code> to fill the array.</p>
+<p>The final step is to actually invoke the JavaScript callback that was sent in as the initial parameters to our addon. We pack an arguments array representing the parameters (Null first, since there is no error, and then the array). We end by executing the callback - at which time control is sent back to JavaScript again.</p>
+<p>You&#39;ll need to do another <code>node-gyp configure build</code> to build this module, and now we can call it from Node.js.</p>
+<h4 id="calling-from-javascript">Calling from JavaScript</h4>
+<p>As shown above, we just need to <code>require</code> the module now:</p>
+<pre><code class="lang-javascript">var nodeprime = require(&quot;[relative path to code]&quot; + 
+  &quot;/cpp/nodeprime/build/Release/nodeprime&quot;)
+</code></pre>
+<p>Now to get prime numbers under 100, just call the function - passing in a callback that will be invoked once the prime numbers are generated:</p>
+<pre><code class="lang-javascript">primes.getPrimes(100, function (err, primes){
+  console.log(primes);
+});
+</code></pre>
+<h3 id="putting-it-all-together-">Putting it all together...</h3>
+<p>OK... so lets put this on the web app we&#39;ve been developing. I&#39;ll just show you the asynchronous version, since the synchronous model really doesn&#39;t play well with the web at all.</p>
+<p>Inside the <code>/web/index.js</code> file we are going to add another entry for a route called <code>ffi</code>.</p>
+<pre><code class="lang-javascript">var types = [
+  {
+    title: &quot;pure_node&quot;,
+    description: &quot;Execute a really primitive &quot; + 
+      &quot;implementation of prime sieve in Node.js&quot;
+  },
+  //... the entries for the automation and shared library
+  {
+    title: &quot;addon&quot;,
+    description: &quot;Creating a Node Addon that can &quot; +
+      &quot;be called like any other module.  Based on /cpp/nodeprime&quot;
+  }
+  ];
+</code></pre>
+<p>That type array is used to create the routes by looking for a file named after each <code>title</code> property in the <code>web/routes/</code> directory:</p>
+<pre><code class="lang-javascript">types.forEach(function (type) {
+    app.use(&#39;/&#39;+type.title, require(&#39;./routes/&#39; + type.title));
+});
+</code></pre>
+<p>Now let&#39;s add our route in <code>/web/routes/addon.js</code>. The relevant post handler is below, and it looks a lot like the the code we&#39;ve already seen:</p>
+<pre><code class="lang-javascript">router.post(&#39;/&#39;, function(req, res) {
+    var under = parseInt(req.body.under);
+    primes.getPrimes(under, function (err, primes) {
+        res.setHeader(&#39;Content-Type&#39;, &#39;application/json&#39;);
+        res.end(JSON.stringify({
+            results: primes
+        }));
+    });
+    console.log(&quot;Primes generated using &quot; + type);
+});
+</code></pre>
+<p>Fire up the web app (<code>node index</code> from <code>/web</code>) and try the link for <code>addon</code>. No surprises.</p>
+<p><a href="appB.html">Appendix B</a><br><a href="index.html">Table of Contents</a></p>
+</body></html>

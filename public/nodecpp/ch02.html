@@ -1,0 +1,579 @@
+<!doctype html><html><head>
+
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/styles/default.min.css">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.4.0/highlight.min.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+  <style>
+      .markdown-body {
+          box-sizing: border-box;
+          min-width: 200px;
+          max-width: 980px;
+          margin: 0 auto;
+          padding: 45px;
+      }
+      .highlight {
+        background-color:red;
+        background-color:#f1c40f;
+        padding:1em;
+      }
+  </style>
+<title>C++ and Node.js Integration</title>
+</head><body class='markdown-body'>
+<p><a href="index.html">Table of Contents</a></p>
+<h1 id="chapter-2-understanding-the-v8-api">Chapter 2 - Understanding the V8 API</h1>
+<p>In Chapter 1 we learned just enough of the V8 API to be dangerous - <em>which is not where we want to be</em>! In order to make use of the V8 documentation online, you&#39;ll need to have a fundamental grasp of how the system works. To really start developing powerful addons to serve all of your use cases, you&#39;ll need to learn the details of the memory management and data type facilities V8 provides. These topics are the focus of this chapter. This chapter serves as the foundation of the next few chapters as well, which will show you how to deal with arrays and objects. The topics in this chapter also play a critical role in understanding how asynchronous addons function, as we&#39;ll highlight the different ways we can allocate data in C++ through V8.</p>
+<h2 id="javascript-memory-allocation">JavaScript memory allocation</h2>
+<p>The key to understanding V8 data types - and how we use them inside our C++ addons - is to understand how V8 stores the memory associated with the variables JavaScript code creates. A few key points are worth remembering, especially if you are relatively new to Node.js:</p>
+<ol>
+<li>Node.js is a C++ program. It uses two libraries to provide much of it&#39;s structure - V8, which is the JavaScript code runtime; and libuv, which implements the event loop (much more on this in Chapter 4 and 7).</li>
+<li>V8 is a C++ library. It&#39;s your JavaScript&#39;s &quot;world&quot; so to speak - when your JavaScript code creates variables, the space created for them is created <em>inside</em> V8&#39;s address space - in it&#39;s heap. We&#39;ll call the memory associated with a JavaScript variable a <strong>storage cell</strong> to keep this distinction clear.</li>
+<li>JavaScript variables are <em>garbage collected</em> - meaning V8 must implement a garbage collector (there are tons of resources online that show you how it does this). To do this, V8 must keep track of how many references are pointing to each <strong>storage cell</strong>.</li>
+<li>V8&#39;s C++ data types allow your C++ code (addon) to access the very same <strong>storage cells</strong> that the executing JavaScript code can.</li>
+<li>Lastly, <strong>storage cells</strong> are only eligible for garbage collection when there are no references to them in JavaScript code, <em>but also</em> no references to them in any C++ code. This point is critical to understanding <code>Local</code> vs. <code>Persistent</code> handles later in this chapter!</li>
+</ol>
+<p>The take-away here is that there is a <em>huge</em> difference between a variable your C++ code creates in standard fashion (<code>double x</code>) and a <code>V8::Number</code>. The <code>double</code> is getting created on the stack (or heap) of the C++ program (essentially, Node.js), while the <code>V8::Number</code> is a C++ object which contains a reference to a <strong>storage cell</strong>, managed entirely by the V8 runtime (and of course, stored on the C++ program&#39;s heap as well).</p>
+<h3 id="isolates">Isolates</h3>
+<p>Before tackling how actual memory is allocated and accessed, let&#39;s investigate the idea of <em>isolates</em> a bit further than we did in Chapter 1 - as references to isolates are virtually everywhere in the V8 API. An <code>Isolate</code> is an independent instance of the V8 runtime - complete with execution context (control flow), memory management/garbage collection, etc. A C++ program can create multiple <em>Isolate</em> objects in order to provide multiple, parallel, and <em>isolated</em> execution environments for scripts to run. Most importantly, each <code>Isolate</code> contains it&#39;s own heap - <em>it&#39;s own pool of memory from which storage cells for the variables created by the JavaScript executing within it</em>.</p>
+<p>Node.js creates a single <code>Isolate</code>, and there is no API for creating additional ones via JavaScript (not sure if that even makes sense!). If you were embedding V8 in your own C++ application, only then would creating multiple <code>Isolate</code> objects be possible. Isolates have an important role in the limitations placed on multi-threaded code. There is a strict <em>single thread</em> rule for a given <code>Isolate</code> - meaning only one thread is allowed to access an <code>Isolate</code> and it&#39;s resources at a given time. In the Node.js environment, this thread is already spoken for (it&#39;s the event-loop, your JavaScript code - or the C++ called from it) - accessing <code>Isolate</code> resources from other C++ threads is impossible[1].</p>
+<p>If you were embedding V8 in your own C++, you <em>could</em> access a single <code>Isolate</code> using multiple threads. You&#39;d need to perform synchronization to ensure no two threads accessed the <code>Isolate</code> simultaneously however. This synchronization must be done through V8&#39;s <code>Locker</code> and <code>Unlocker</code> classes. V8 enforces this rule strictly - if you try get around it, you&#39;ll take an unexpected detour to <code>segmentation fault</code> city - regardless of if an actual race conditions exits or not.</p>
+<p>The threading rules associated with <code>Isolate</code> objects is critical to understanding the limitations of C++ addons and multi-threading - which will be discussed in further detail towards the end of this chapter, and in Chapter 4.</p>
+<h3 id="contexts">Contexts</h3>
+<p>While an <code>Isolate</code> encapsulates an execution environment and heap, it does not fully provide the requirements for running JavaScript code. The running of JavaScript requires a <code>global</code> object. The <code>global</code> object will have properties attached to it such as <code>Infinity</code>, <code>undefined</code>, <code>NAN</code>, and <code>null</code>. It has functions associated with it - like <code>eval</code>, <code>isNan</code>, <code>parseFloat</code>, etc. It also contains the Objects we are familiar with (<code>Object</code>, <code>Function</code>, <code>Boolean</code>, etc). These are all defined in the EMCAScript standard.</p>
+<p>A full execution environment also has a <em>global scope</em> - which will contain objects created by user scripts or provided by the host (in this context, the host is the C++ program instantiating V8). In the browser world, globally scoped objects would include <code>window</code>, <code>document</code>, <code>alert</code>, <code>setTimeout()</code>, etc. Node.js provides global objects/function such as <code>console</code>, <code>exports</code>, <code>module</code>, <code>process</code>, <code>require()</code>,. A complete list can be found at <a href="https://nodejs.org/api/globals.html">https://nodejs.org/api/globals.html</a>.</p>
+<p>V8 represents the &quot;global&quot; idea as a <code>V8::Context</code>. A <code>Context</code> object corresponds to a global object in the <code>Isolate</code>&#39;s heap. An <code>Isolate</code> may have any number of <code>Contexts</code> active, each operating with their own independent globals. In a web browser, the C++ browser code will create separate <code>Context</code> objects for each tab - as each tab&#39;s JavaScript should execute independently. Any changes to objects in the global space of one tab would not affect another&#39;s (such as changing <code>window.location</code> or <code>document</code>!).</p>
+<p>In Node.js, we typically only have a single implicit <code>Context</code>. You can actually compile and execute JavaScript in new contexts through the <code>vm</code> object however. While sometimes useful, use cases for this functionality is relatively rare and won&#39;t be discussed much further in this book.</p>
+<p>From this point forward, unless we must make the distinction in code, when we speak of an <code>Isolate</code> we are speaking of the isolate and the context created by Node.js. This single execution environment executes all of our Node.js JavaScript code, and will be accessed via the V8 API by our C++ addons when we need to allocate / read / or write to JavaScript memory.</p>
+<h3 id="javascript-variables-c-handles">JavaScript variables, C++ Handles</h3>
+<p>Now let&#39;s look at JavaScript variables, from the perspective of Node.js and V8. When we create an object in JavaScript, <code>var obj = {x : 5};</code> V8 dutifully creates a storage cell in the <code>Isolate</code>&#39;s heap - as shown in Figure 3.</p>
+<p><img src="imgs/MemorySystem-0.png" alt="JavaScript variables being allocated as storage cell inside an isolate&#39;s heap."></p>
+<p>Now let&#39;s take a look at how this particular variable could be accessed by a Node.js C++ addon. Aside from trivial use cases, addons will need to either accepts parameters sent from JavaScript or return data to JavaScript - and likely they will do both. Let&#39;s build a simple addon now that exposes a single method - <code>mutate</code> which accepts an object to change via a parameter:</p>
+<pre><code class="lang-cpp">void Mutate(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+    Local&lt;Object&gt; target = args[0]-&gt;ToObject();
+    target-&gt;Set(
+        String::NewFromUtf8(isolate, &quot;x&quot;), 
+        Number::New(isolate, 42));
+}
+</code></pre>
+<p>In the code above, I&#39;ve left out the necessary includes, initialization (NODE_SET_METHOD) and the text of the binding.gyp file - see Chapter 1 for details. The interesting stuff is happening in the <code>Mutate</code> function. When our Node.js code invokes <code>Mutate</code>, the Node.js runtime creates a <code>FunctionCallbackInfo</code> object and passes it to our function. On line 2, the first action is to obtain a reference to the current <code>Isolate</code>. This is the way we can begin to access anything within the running JavaScript program - without it we are limited to just normal C++ stack and heap variables.</p>
+<p>On line 3, we obtain a <code>Local</code> handle to an object passed in as <code>arg[0]</code>. We&#39;ll cover type conversion in a moment (<code>ToObject</code>), but for now let&#39;s focus on the what exactly <code>arg[0]</code> is. V8 defines data types that correspond to JavaScript variables stored in storage cells - and since JavaScript defines many data types, the C++ V8 engine models this as a type <em>hierarchy</em> - with <code>v8::Value</code> at the top of the inheritance chain. <code>arg[0]</code> is of type <code>v8::Value</code>, which represents a <em>reference</em> into V8&#39;s storage cells to a particular cell where the first parameter is held.</p>
+<p>In theory, we should be able to manipulate the underlying JavaScript object directly - yet the V8 API requires us to wrap this <code>v8::Value</code> in a <em>handle</em> instead. Recall that V8 is responsible for <em>garbage collection</em> - thus it is extremely concerned with knowing precisely how many references exist to storage cells within an isolate. A <em>handle</em> is an object that represents the existence of such a reference <em>in C++</em> - as V8 not only needs to keep track of references to storage cells originating from JavaScript, but also in the addons JavaScript may invoke.</p>
+<p><img src="imgs/MemorySystem-1.png" alt="Code within a C++ addon accessing storage cells within an isolate&#39;s heap."></p>
+<p>There are two types of handles - <code>Local</code> and <code>Persistent</code>. A <code>Local</code> handle is allocated on the C++ call stack, and wraps a given <code>v8::Value</code>. The creation of a <code>Local</code> implicitly invokes the <code>Local</code>&#39;s constructor - which in turn allows the necessary V8 bookkeeping to take place, ensuring V8 knows there is now a new outstanding reference to this particular storage cell.</p>
+<p><code>Local</code> handles are by far the most common type of handle we see in addon development. Once we have one, we may access and manipulate the underlying data it wraps - typically parameters sent into our addon. As we&#39;ll see below, we may also allocate new storage cells - typically for the purposes of returning references to them back to JavaScript. As is the case in any C++ function, when our addon function returns (back to Node.js/V8), the <em>destructor</em> of any <code>Local</code> handles created within the function is called - which will notify V8 that <em>this</em> particular reference to the storage cell is no longer valid.</p>
+<h3 id="handlescope">HandleScope</h3>
+<p>Actually - while the above paragraph serves as a reasonable mental model of what is going on in typically Node.js addons - it&#39;s actually <em>a bit</em> more complicated than this... <code>Local</code> handle objects do not directly perform bookkeeping in their constructors and destructors - there is a level of indirection that goes unseen in synchronous addons, but is a critical part of V8. The indirection is that <code>Local</code> handles are associated with a <code>HandleScope</code> object - which is a container for bunches of <code>Local</code> handles.</p>
+<p>At a given time, there (must) always be one <code>HandleScope</code> object active within a given isolate. Whenever <code>Local</code> handles are created, they are added to the currently active <code>HandleScope</code> object. Each new <code>HandleScope</code> that is created automatically becomes &quot;active&quot; and all <code>Local</code> handles created afterwards will be associated with it. When a <code>HandleScope</code> is deleted, the previously active <code>HandleScope</code> is made active. It is only when the <code>HandleScope</code> object&#39;s destructor is called that storage cells referenced by the contained handles are considered eligible for garbage collection (assuming no other handles or JavaScript references point to them).</p>
+<p>At the time of this writing, <code>HandleScope</code> objects are front and center Google&#39;s V8 <a href="https://developers.google.com/v8/embed#handles-and-garbage-collection">Embedder&#39;s Guide</a> - however for a simple synchronous Node.js addon - the concept is never used, which leaves many a bit confused. To resolve the confusion, we must again remember that JavaScript most definitely <em>does not</em> call our addon function <em>directly</em>. When JavaScript code invokes an addon - its Node.js (C++) that will actually take the V8 objects associated with parameters and package them up into the <code>FunctionCallbackInfo</code> and call your addon. It is here, <strong>before</strong> your C++ addon function is called, that a <code>HandleScope</code> is created. This means that for C++ addon functions called from JavaScript, it is not mandatory to create a new <code>HandleScope</code> (although you may, if you wish). As will be described when we discuss <em>asynchronous</em> callbacks - C++ code that is going to use V8 but is not directly called by JavaScript <strong>will need</strong> to create a <code>HandleScope</code> of it&#39;s own however.</p>
+<p>I&#39;m going to defer discussing <code>HandleScope</code>s much further, and save more of the discussion for when we cover asynchronous callbacks and are <em>forced</em> to deal with the issue. For now, we can simply remember that when our C++ addon is invoked, any local handle it creates will implicitly be associated with a <code>HandleScope</code> already created - <strong>which will be deleted</strong> when we return back to JavaScript.</p>
+<h2 id="v8-data-types">V8 Data Types</h2>
+<p>Now that we have a bit of an understanding of handles, and how they allow us to interact with storage cells - let&#39;s look at what sort of storage cells we can actually work with. This means taking a look at what data types V8 supports - which unsurprisingly match right up with JavaScript data types!</p>
+<p>Rather than simply listing out data types (I assume you know what a string is!), let&#39;s look at these data types from the context of being passed in as arguments to a C++ addon and returning modified values back to C++. All of the code for this chapter is available in full in the <code>nodecpp-demo</code> repository at <a href="https://github.com/freezer333/nodecpp-demo">https://github.com/freezer333/nodecpp-demo</a>, under the &quot;Conversions&quot; section.</p>
+<h3 id="primitives-strings-numbers-and-booleans">Primitives - Strings, Numbers, and Booleans</h3>
+<p>JavaScript primitives include Strings, Numbers, and Booleans - along with <code>null</code> and <code>undefined</code>. V8 uses an inheritance hierarchy in which <code>Primitive</code> extends <code>Value</code>, and all the individual primitives subclass <code>Primitive</code>. In addition to the standard JavaScript primitives, V8 also supports integers (<code>Int32</code> and <code>Uint32</code>).</p>
+<p>JavaScript has a very flexible type casting system - i.e. using the string &quot;42&quot; as an number automatically converts it to a number primitive and using <code>undefined</code> as a string will result in it turning into the literal &quot;undefined&quot;. This functionality, while foreign to a C++ developer, is fully supported by V8.</p>
+<p>As we go through the API for working with primitives, you will notice that there is no facility for assignment - which at first may seem odd! In fact, it makes a lot of sense however - for three reasons:</p>
+<ol>
+<li>JavaScript primitives are <em>immutable</em> - which means from an underlying storage mechanism, variables &quot;containing&quot; primitives are just pointing to unchanging (and created on-demand) storage cells. Assignment of a <code>var x = 5;</code> makes <code>x</code> point to a storage cell with 5 in it - reassigning <code>x = 6</code> does not change this storage cell (at least, in concept - the interpreter can &quot;cheat&quot;) - it simply makes <code>x</code> point to another storage cell that contains 6. If <code>x</code> and <code>y</code> are both assigned the value of <code>10</code>, they both point to the same storage cell. The same holds for strings and booleans.</li>
+<li>Function calls are pass-by-value, so whenever JavaScript calls a C++ addon with a parameter - if that parameter is a primitive, it is always a distinct <em>copy</em> - changing it&#39;s value has no effect in the calling code.</li>
+<li>Handles, as described, are references to <em>storage cells</em>. Thus, given #1 above, it doesn&#39;t make sense to allow handle values to change - since primitives don&#39;t change!</li>
+</ol>
+<p>Hopefully that makes some sense - however it&#39;s still likely you&#39;ll need to <em>modify</em> V8 variables... we&#39;ll just need to do this by <em>creating</em> new ones and assigning the new value to them.</p>
+<p>Now let&#39;s look at the common primitive types - <code>Number</code>, <code>String</code>, and <code>Boolean</code>. For each, we&#39;ll build an addon function that accepts a single primitive, transforms it in some way, and returns the transformed value. Along the way, we&#39;ll look at how V8 handles casting, the creation of new primitives, and how we can detect alternative conditions - such as when <code>null</code>, <code>undefined</code>, or an <code>Object</code> type is passed in.</p>
+<h4 id="converting-a-v8-number-to-a-c-double">Converting a V8 Number to a C++ double</h4>
+<p>Let&#39;s start with a simple conversion of a JavaScript number being passed into an addon function.</p>
+<pre><code class="lang-cpp">void PassNumber(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+
+    Local&lt;Number&gt; target = args[0]-&gt;ToNumber();
+    double value = target-&gt;NumberValue();
+
+    // value is now OUTSIDE of V8 - we can use it in 
+    // all the C++ standard ways.
+}
+</code></pre>
+<p>On line 4 we convert the first argument passed to C++ into a number using the <code>ToNumber</code> method on <code>v8::Value</code>. Note here that the <code>-&gt;</code> syntax is be used on <code>Local&lt;Value&gt;</code> objects to call methods on their underlying V8 data types - the <code>Local</code> object overloads the pointer dereferencing operator.</p>
+<p>The first conversion to <code>Local&lt;Number&gt;</code> is actually unnecessary though - since the <code>NumberValue</code> function is actually (somewhat oddly[2]) defined on <code>v8::Value</code>. So the code below is perfectly equivalent:</p>
+<pre><code class="lang-cpp">void PassNumber(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+
+    // We don&#39;t need to convert to `Local&lt;Number&gt;` explicitly...
+    double value = args[0]-&gt;NumberValue();
+
+    // value is now OUTSIDE of V8 - we can use it in 
+    // all the C++ standard ways.
+}
+</code></pre>
+<h4 id="creating-new-v8-numbers-and-assignment">Creating new V8 Numbers and assignment</h4>
+<p>Now that we have a C++ value, we can modify it - perhaps by adding a fixed value to it. To return new value, we need to create a new storage cell and return a reference back to JavaScript.</p>
+<p>Creating new V8 numbers is straightforward - it is accomplished using the static factory method <code>New</code> defined on <code>v8::Number</code>.</p>
+<pre><code class="lang-cpp">void PassNumber(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+
+    double value = args[0]-&gt;NumberValue();
+
+    value+= 42;
+
+    Local&lt;Number&gt; retval = Number::New(isolate, value);
+
+    args.GetReturnValue().Set(retval);
+}
+</code></pre>
+<p>Line 8 creates the storage cell (note that the <code>isolate</code> must be passed into the <code>New</code> method). We simultaneously assign the value as we allocate it - again, since primitives are immutable in JavaScript. Line 10 then returns it, using the standard method discussed in Chapter 1.</p>
+<p>Calling from JavaScript results in the expected results for standard number values.</p>
+<pre><code class="lang-javascript">const addon = require(&#39;./build/Release/primitive&#39;);
+
+var number_returned = addon.pass_number(23);
+console.log(number_returned); // prints 65
+
+var number_returned = addon.pass_number(0.5);
+console.log(number_returned); // prints 42.5
+</code></pre>
+<h4 id="safety-checks-making-sure-it-s-a-number">Safety checks - making sure it&#39;s a number</h4>
+<p>Of course, there is no guarantee that the first argument is indeed a JavaScript number. Let&#39;s investigate what happens should we invoke this code in a variety of different use cases.</p>
+<p>As a first check - what happens if a first argument isn&#39;t even specified?</p>
+<pre><code class="lang-javascript">var number_returned = addon.pass_number();
+console.log(number_returned); // NAN!
+</code></pre>
+<p>We&#39;re getting our first glimpse of V8&#39;s ability to &quot;do the JavaScript thing&quot;. If our addon was a normal JavaScript function, <code>args[0]</code> would be <code>undefined</code>. When used in a mathematical expression, <code>undefined</code> ends up giving you <code>NAN</code> - so we are returning <code>NAN + 42</code>. So... lesson learned: if you call <code>NumberValue()</code> on a <code>Local&lt;Value&gt;</code> that stores <code>undefined</code>, you get <code>NAN</code>.</p>
+<p>Now is a good time to review how you could preemptively check for this though. First, <code>FunctionCallbackInfo</code> exposes an <code>Length</code> function that can let us catch situations where we don&#39;t have the arguments we expect. In addition, <code>v8::Value</code> has query functions defined on it so you can interrogate the value to determine it&#39;s underlying type. There is an <code>IsArray</code>, <code>IsBoolean</code>, <code>IsDate</code>, <code>IsFunction</code>, <code>IsInt32</code>, <code>IsNull</code>, <code>IsNumber</code>, <code>IsObject</code>... you get the idea! They all return boolean results. If you prefer to throw exceptions or return error values if you don&#39;t get the right parameters in your addon, you may certainly do so.</p>
+<pre><code class="lang-cpp">void PassNumber(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+
+    if ( args.Length() &lt; 1 ) {
+        args.GetReturnValue().Set(Number::New(isolate, 0));
+        return;
+    }
+    // This would catch anything that can&#39;t be a Number
+    if ( !args[0]-&gt;IsNumber()) {
+        args.GetReturnValue().Set(Number::New(isolate, -1));
+        return;
+    }
+    ...
+</code></pre>
+<p>What if we stretch this example a bit, and pass in an argument from JavaScript that aren&#39;t <em>necessarily</em> true number objects? We can get a sense of how V8 handles these situations if we <em>do not</em> check for non-numbers. Let&#39;s return to our naive addon:</p>
+<pre><code class="lang-cpp">void PassNumber(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+
+    // naively assume args[0] is a number
+    double value = args[0]-&gt;NumberValue();
+
+    Local&lt;Number&gt; retval = Number::New(isolate, value + 42);
+    args.GetReturnValue().Set(retval);
+}
+</code></pre>
+<p>Let&#39;s call this with a bunch of non-numbers.</p>
+<pre><code class="lang-javascript">number_returned = addon.pass_number(&quot;23&quot;);
+console.log(number_returned);  
+// Prints 65 - string is parsed
+
+number_returned = addon.pass_number(null);
+console.log(number_returned);  
+// Prints 42 - null is 0
+
+number_returned = addon.pass_number(undefined);
+console.log(number_returned);  
+// Prints NaN, undefined -&gt; NaN
+
+number_returned = addon.pass_number(&quot;this is not a number&quot;);
+console.log(number_returned);  
+// Prints NaN, string can&#39;t be parsed
+
+number_returned = addon.pass_number({x: 5});
+console.log(number_returned);  
+// Prints NaN, object cannot be cast
+</code></pre>
+<p>If you wrote a pure JavaScript counterpart for our addon, you&#39;d get all the same results as the addon above produces - which is exactly the way we&#39;d want things to work! In all of these cases, if we checked <code>args[0]-&gt;IsNumber</code>, it would have returned false. The takeaway here is that you have a choice - you can write your addons to rigidly accept true numbers, or you can allow V8 to do &quot;the JavaScript thing&quot; - which often times is the best approach.</p>
+<h4 id="converting-a-v8-number-to-a-c-int">Converting a V8 Number to a C++ int</h4>
+<p>While JavaScript doesn&#39;t necessarily force us to distinguish between integers and real numbers, C++ of course does. If we wish to use signed or unsigned integers in our addon, we could (1) simply convert our C++ <code>double</code> into an <code>int</code> using standard C++ methods - or (2) we can use some of V8&#39;s API to do the work.</p>
+<pre><code class="lang-cpp">void PassInteger(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+
+    int value = args[0]-&gt;Int32Value();
+
+    Local&lt;Number&gt; retval = Int32::New(isolate, value + 42);
+    args.GetReturnValue().Set(retval);
+}
+</code></pre>
+<p>When called from JavaScript with an integer, things are pretty mundane. If JavaScript calls this function with say <code>5.7</code> as a parameter, V8 automatically cuts off the precision and <code>Int32Value</code> still returns 5 - resulting in 47 being returned. Alternatively, we can use <code>IsInt32()</code>, which would return false given <code>5.7</code>, allowing us to take corrective action.</p>
+<p>Using <code>Uint32</code> instead of <code>Int32</code> allows you to work with unsigned ints in the same manner.</p>
+<h4 id="working-with-boolean-parameters-and-return-values">Working with Boolean parameters and return values</h4>
+<p>The API for converting from V8 to C++ boolean values is quite similar to numbers.</p>
+<pre><code class="lang-cpp">void PassBoolean(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+    bool value = args[0]-&gt;BooleanValue();
+
+    Local&lt;Boolean&gt; retval = Boolean::New(isolate, !value);
+    args.GetReturnValue().Set(retval);
+}
+</code></pre>
+<p>Just like with numbers, we can test to see if the given argument is a boolean or not using <code>IsBoolean</code>.</p>
+<h4 id="truthy-vs-falsey-values">Truthy vs. Falsey values</h4>
+<p>The JavaScript rules for converting other data into booleans is fairly straightforward. <code>Null</code>, <code>Undefined</code>, 0, and empty strings are always converted to <code>false</code>. Everything else (including empty objects and arrays) are considered <code>true</code>. The <code>BooleanValue</code> function honors this specification and will convert anything referenced by the <code>v8::Value</code> to a boolean in the expected manner.</p>
+<h4 id="converting-a-v8-string-to-a-c-string">Converting a V8 String to a C++ string</h4>
+<p>In some respects, accepting strings into an addon is simpler than number values, since we&#39;re usually a lot more permissive about what can be represented as a string. On the other hand, the V8 API is a little funny with strings - rather than having a simple analog to the <code>NumberValue()</code> method on <code>v8::Value</code>, we instead need to instantiate a <code>v8::String::Utf8Value</code> object from a given handle. This instance is a wrapper around a null-terminated <code>char *</code>, and can be dereferenced to obtain the underlying <code>char *</code>. This <code>char *</code> can then be used directly, or wrapped in a standard C++ string.</p>
+<p>Let&#39;s look at an addon that reverses a given string and returns it.</p>
+<pre><code class="lang-cpp">void PassString(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+
+    v8::String::Utf8Value s(args[0]);
+
+    // wrap in c++ string instead
+    std::string str(*s);
+    std::reverse(str.begin(), str.end());    
+
+    /// need to return this...
+</code></pre>
+<h4 id="creating-new-v8-strings-and-assignment">Creating new V8 strings and assignment</h4>
+<p>Just as with <code>Number</code> objects, strings are immutable - we are manipulating the C++ representation of the string - not the V8 storage cell. To return the transformed string, we must move it back into V8 by creating a new <code>String</code>. Older versions of V8 also supported <code>AsciiValue</code>, however this is no longer a supported type.</p>
+<pre><code class="lang-cpp">void PassString(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+
+    v8::String::Utf8Value s(args[0]);
+    std::string str(*s);
+    std::reverse(str.begin(), str.end());    
+
+    // Create a new V8 string out of the char *    
+    Local&lt;String&gt; retval = 
+        String::NewFromUtf8(isolate, str.c_str());
+    args.GetReturnValue().Set(retval);
+}
+</code></pre>
+<p>Note that the <code>String::NewFromUtf8</code> factory method accepts a <code>const char *</code>, not a C++ string - so we&#39;ve accessed it via the standard <code>c_str()</code> method.</p>
+<h4 id="string-representations-of-other-javascript-types">String representations of other JavaScript types</h4>
+<p>Just like with numbers, if we receive a value from JavaScript we can always check to see if it truly is a string - this time by using the <code>IsString</code> method.</p>
+<pre><code class="lang-cpp">void PassString(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+
+    if ( !args[0]-&gt;IsString() ) {
+        // uh oh... this isn&#39;t a string
+    }
+    ...
+}
+</code></pre>
+<p>Of course, we can just ignore this little problem, and ask V8 to convert the given argument to a string. Much like numbers, this works just like the JavaScript spec. If we pass the following values into the addon, we can see how non-strings get returned (remember, the addon is reversing the string before it returns it).</p>
+<pre><code class="lang-javascript">var string_returned = addon.pass_string(&quot;The truth is out there&quot;);
+console.log(string_returned);  // prints &quot;ereht tuo si hturt ehT&quot;
+
+string_returned = addon.pass_string(42);
+console.log(string_returned);  
+// prints 24 - the 42 is easily made to a string
+
+string_returned = addon.pass_string(null);
+console.log(string_returned);  
+// prints llun - &quot;null&quot; backwards!
+
+string_returned = addon.pass_string(undefined);
+console.log(string_returned);  // prints &quot;denifednu&quot;
+
+string_returned = addon.pass_string({x: 5});
+console.log(string_returned);  
+// prints ]tcejbO tcejbo[ - &quot;[Object]&quot; backwards
+</code></pre>
+<p>In most situations, converting numbers and booleans to strings implicitly likely makes sense. Converting <code>null</code>, <code>undefined</code>, and objects may end up being undesirable in some cases though - but we can easily check for these:</p>
+<pre><code class="lang-cpp">void PassString(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+
+    if ( args[0]-&gt;IsNull() ) {
+        args.GetReturnValue().Set(Null(isolate));
+        return;
+    }
+    else if ( args[0]-&gt;IsUndefined() ) {
+        // if we never set the return value, it will be undefined.
+        return;
+    }
+    else if ( args[0]-&gt;IsObject() ) {
+        // we can just return the same reference to the object, rather 
+        // than reversing it...
+        args.GetReturnValue().Set(args[0]);
+        return;
+    }
+
+    v8::String::Utf8Value s(args[0]);
+    std::string str(*s);
+    std::reverse(str.begin(), str.end());    
+
+    Local&lt;String&gt; retval = 
+        String::NewFromUtf8(isolate, str.c_str());
+    args.GetReturnValue().Set(retval);
+}
+</code></pre>
+<p>In the code above, functions, arrays, regular expressions, and all other JavaScript object types will get caught by the <code>IsObject</code> function. There are also more specific queries if you want to handle those differently.</p>
+<p>A common thread between all primitives is that we must copy data out of V8 storage cells and into C++ address space to manipulate them. We must then allocate new V8 storage cells in order to return our manipulated data. This work flow is predicated on the fact that primitives are <em>immutable</em> - a property that JavaScript objects do not share.</p>
+<h3 id="objects">Objects</h3>
+<p>Objects represent our first <em>mutable</em> data type. In JavaScript, the term &quot;object&quot; has dual meaning - there is a standard <code>Object</code> type, and there are other <em>object</em> sub-types that extend <code>Object</code>, such as <code>Array</code> and <code>Function</code>. For now, let&#39;s just focus on the typical, standard object:</p>
+<pre><code class="lang-javascript">var obj = {
+    x : 5, 
+    y : &quot;hello&quot;, 
+    z : true
+}
+</code></pre>
+<h4 id="accessing-javascript-objects-passed-to-c-">Accessing JavaScript objects passed to C++</h4>
+<p>When objects are passed from JavaScript we can create local handles to them in much the same way as we&#39;ve done with primitives. In the example below, we&#39;ll receive an object and set it&#39;s <code>y</code> property to a fixed value of <code>10</code> before returning it back to JavaScript.</p>
+<pre><code class="lang-cpp">void PassObject(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+    Local&lt;Object&gt; target = args[0]-&gt;ToObject();
+
+    target-&gt;Set(String::NewFromUtf8(isolate, &quot;y&quot;), 
+        Number::New(isolate, 10));
+
+    args.GetReturnValue().Set(target);
+}
+</code></pre>
+<p>Once we have a <code>Local</code> handle wrapping the object, we can begin manipulating properties within the referenced object using <code>Set</code> and <code>Get</code>. Note that the <code>Set</code> (and <code>Get</code>) methods <strong>require us to refer to property names using V8 strings</strong>, not C++ strings. If we were to call this from JavaScript, we&#39;d see that a new property <code>y</code> is now on the returned object:</p>
+<pre><code class="lang-javascript">var retval = addon.pass_object({x : 3});
+
+console.log(retval);  // prints {x : 3, y: 10}
+</code></pre>
+<p>We can of course overwrite an existing property as well, so passing in an object with <code>y</code> already present behaves as expected:</p>
+<pre><code class="lang-cpp">var retval = addon.pass_object({x : 3, y : &quot;hello&quot;});
+
+console.log(retval);  // still prints {x : 3, y: 10}
+</code></pre>
+<p>At this point, it is instructive to note the second parameters of the <code>Set</code> method (Line 5 of C++ code above, repeated below).</p>
+<pre><code class="lang-cpp">target-&gt;Set(String::NewFromUtf8(isolate, &quot;y&quot;), Number::New(isolate, 10));
+</code></pre>
+<p>While objects are <em>mutable</em> - meaning their properties may be changed - the properties <em>themselves</em> could be primitives (which is the case here), which means they are <strong>immutable</strong>. Therefore, to set <code>y</code> we must always pass in a newly created (or previously existing) V8::Value - we are not simply <em>overwriting</em> <code>y</code> - we are reassigning it. We&#39;ll cover nested objects in Chapter 3, but for now, know that we could of course assign a object to <code>y</code> as well.</p>
+<p>To modify a property based on it&#39;s current value, we must perform similar steps as we did previously with primitives: we must (1) copy the V8 property into a C++ variable, (2) manipulate the data, and (3) copy the C++ data into a new storage cell and assign as appropriate. In the code listing below we use the <code>Get</code> method to retrieve a <code>Handle</code> to the <code>y</code> property and copy the data into C++ for manipulation.</p>
+<pre><code class="lang-cpp">void PassObject(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+    Local&lt;Object&gt; target = args[0]-&gt;ToObject();
+
+    Local&lt;String&gt; prop = String::NewFromUtf8(isolate, &quot;y&quot;);
+
+    Local&lt;Number&gt; y_handle = target-&gt;Get(prop)-&gt;ToNumber();
+    double y = y_handle-&gt;NumberValue();
+
+    target-&gt;Set(prop, Number::New(isolate, y + 42));
+
+    args.GetReturnValue().Set(target);
+}
+</code></pre>
+<p>The same can be achieved more succinctly using <code>NumberValue</code> directly on the handle returned by <code>Get</code>. More generally, the return value of <code>Get</code> is simply a <code>Local&lt;Value&gt;</code> - which can be used in all the same ways it was used in the sections earlier in this chapter.</p>
+<pre><code class="lang-cpp">void PassObject(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+    Local&lt;Object&gt; target = args[0]-&gt;ToObject();
+
+    Local&lt;String&gt; prop = String::NewFromUtf8(isolate, &quot;y&quot;);
+
+    double y = target-&gt;Get(prop)-&gt;NumberValue();
+
+    target-&gt;Set(prop, Number::New(isolate, y + 42));
+
+    args.GetReturnValue().Set(target);
+}
+</code></pre>
+<p>Assuming <code>y</code> already exists as a number within the object passed from JavaScript, the returned object will have a <code>property</code> which is incremented. If the object passed does not have a <code>y</code> property, or it&#39;s <code>y</code> property is not a number type, then the mathematics will reflect the rules outlined in the <code>Number</code> discussion above.</p>
+<pre><code class="lang-javascript">var retval = addon.pass_object({x : 3, y: 10});
+console.log(retval);  // prints {x : 3, y: 52}
+
+var retval = addon.pass_object({x : 3, y: &quot;hello&quot;});
+console.log(retval);  // prints {x : 3, y: NaN}
+
+var retval = addon.pass_object({x : 3});
+console.log(retval);  // prints {x : 3, y: NaN}
+</code></pre>
+<p>Note that <code>Get</code> returns <code>Undefined</code> objects if a requested property does not exist. If we want to avoid getting <code>NaN</code>, we could detect that the property is undefined, and preemptively set it to 0 before accessing it again to do the computation.</p>
+<pre><code class="lang-cpp">// before converting y to a number, init to 0 if it doesn&#39;t exist...
+if ( target-&gt;Get(prop)-&gt;IsUndefined() ) {
+   target-&gt;Set(prop, Number::New(isolate, 0));
+} 
+
+// continue to work with &quot;prop&quot;
+</code></pre>
+<h4 id="creating-and-returning-new-javascript-objects-from-c-">Creating and returning new JavaScript objects from C++</h4>
+<p>Much like primitives, we can create new objects on the V8 heap using a factory method. Properties can be added using the <code>Set</code> method just like on preexisting objects. The following example accepts an object with <code>x</code> and <code>y</code> numeric properties and returns a <strong>new</strong> object containing the sum and product.</p>
+<pre><code class="lang-cpp">void PassObject(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+    Local&lt;Object&gt; target = args[0]-&gt;ToObject();
+
+    Local&lt;String&gt; x_prop = String::NewFromUtf8(isolate, &quot;x&quot;);
+    Local&lt;String&gt; y_prop = String::NewFromUtf8(isolate, &quot;y&quot;);
+    Local&lt;String&gt; sum_prop = String::NewFromUtf8(isolate, &quot;sum&quot;);
+    Local&lt;String&gt; product_prop = String::NewFromUtf8(isolate, &quot;product&quot;);
+
+    if ( !target-&gt;Get(x_prop)-&gt;IsNumber() ) {
+        target-&gt;Set(x_prop, Number::New(isolate, 0));
+    }
+    if ( !target-&gt;Get(y_prop)-&gt;IsNumber() ) {
+        target-&gt;Set(y_prop, Number::New(isolate, 0));
+    }
+
+    double x = target-&gt;Get(x_prop)-&gt;NumberValue();
+    double y = target-&gt;Get(y_prop)-&gt;NumberValue();
+
+    // Create a new object to return to V8
+    Local&lt;Object&gt; obj = Object::New(isolate);
+    obj-&gt;Set(sum_prop, Number::New(isolate, x + y));
+    obj-&gt;Set(product_prop, Number::New(isolate, x * y));
+
+    args.GetReturnValue().Set(obj);
+}
+</code></pre>
+<p>As a final note, keep in mind that JavaScript object types do not (and cannot) automatically map into C++ objects. In Chapter 5 we will learn how to approximate this idea using <code>ObjectWrap</code> - however we must always remember that the two concepts are fundamentally different.</p>
+<h3 id="arrays">Arrays</h3>
+<p>Arrays in JavaScript are simply objects, with special treatment of properties that represent whole numbers. Arrays can have non-indexed properties, and they can also have methods (<code>Function</code>s) such as <code>length()</code>. Values held at indexes can be of any data type, and they need not be all of the same type. Needless to say - they <em>are not much like C++</em> arrays - they just appear so!</p>
+<h4 id="accessing-arrays-passed-from-javascript">Accessing Arrays passed from JavaScript</h4>
+<p>Somewhat surprisingly, converting a <code>Local&lt;Value&gt;</code> into a <code>Local&lt;Array&gt;</code> breaks the pattern we&#39;ve seen being established. While you may expect <code>Value</code> to have a <code>ToArray</code> method like it&#39;s <code>ToNumber</code>, <code>ToObject</code>, etc. - it does not. Rather, we must explicitly cast it using <code>Array</code>&#39;s static <code>Cast</code> function.</p>
+<pre><code class="lang-cpp">Local&lt;Array&gt; array = Local&lt;Array&gt;::Cast(args[0]);
+</code></pre>
+<p>Happily, accessing index properties in arrays is quite similar to when dealing with objects - we just use integers to access elements. We can also use the built in <code>Length</code> function that is defined on the <code>v8::Array</code> object as a way to loop through the array. The below addon method increments each numeric value stored at an array index:</p>
+<pre><code class="lang-cpp">void IncrementArray(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+    Local&lt;Array&gt; array = Local&lt;Array&gt;::Cast(args[0]);
+
+    for (unsigned int i = 0; i &lt; array-&gt;Length(); i++ ) {
+      double value = array-&gt;Get(i)-&gt;NumberValue();
+      array-&gt;Set(i, Number::New(isolate, value + 1));
+    }
+
+    // Like all objects, our changes will be reflected even if we
+    // don&#39;t return - as objects (and array) are mutable.
+}
+</code></pre>
+<p>Passing in an array of mixed types will result in some <code>NaN</code> results, which could be avoided using the techniques (i.e. <code>IsNumber</code>) described in previous sections.</p>
+<pre><code class="lang-javascript">var data = [1, 2, &quot;hello&quot;, &quot;world&quot;, 3];
+addon.increment_array(data);
+console.log(data);  // prints [ 2, 3, NaN, NaN, 4 ]
+</code></pre>
+<p>It&#39;s important to note that <code>increment_array</code> has not returned anything - yet the results of the array manipulation that took place within the addon are reflected in our JavaScript printout. This shouldn&#39;t be a surprise - objects (and arrays are objects) are reference types. When reference types are passed to JavaScript functions, only references are passed - not copies of the objects. By and large, C++ addons behave exactly like JavaScript functions - so we see that the addon is working directly with the underlying storage cells associated with the array it was given. The same could be done with <code>Object</code>s as well.</p>
+<p>Unlike C++, JavaScript arrays may be sparse - which we should consider when looping through an array in our addon. The addon code below avoids processing any indices which have not already been set in JavaScript.</p>
+<pre><code class="lang-cpp">void IncrementArray(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+    Local&lt;Array&gt; array = Local&lt;Array&gt;::Cast(args[0]);
+
+    for (unsigned int i = 0; i &lt; array-&gt;Length(); i++ ) {
+      if (array-&gt;Has(i)) {
+        double value = array-&gt;Get(i)-&gt;NumberValue();
+        array-&gt;Set(i, Number::New(isolate, value + 1));
+      }
+    }
+}
+</code></pre>
+<p>Note that the <code>Has</code> method could also be used on objects - with a property string (<code>Local&lt;Value&gt;</code> more accurately) rather than an index.</p>
+<h4 id="creating-and-returning-new-arrays-to-c-">Creating and returning new Arrays to C++</h4>
+<p>Once again, creating Arrays and returning them follows a similar pattern as other data types. <code>Array</code> has a static <code>New</code> factory method, and we may set any indices we wish.</p>
+<pre><code class="lang-cpp">Local&lt;Array&gt; a = Array::New(isolate);
+a-&gt;Set(0, Number::New(isolate, 10));
+a-&gt;Set(2, Number::New(isolate, 20));
+
+args.GetReturnValue().Set(a);
+</code></pre>
+<h4 id="arrays-with-non-index-properties">Arrays with non-index properties</h4>
+<p>JavaScript arrays can have non-array properties, since ultimately they are just objects. We can easily access these, using the same methods we used with Objects due to V8&#39;s inheritance hierarchy - <code>v8::Array</code> is just a subtype of <code>v8::Object</code>.</p>
+<pre><code class="lang-cpp">Local&lt;String&gt; prop = String::NewFromUtf8(isolate, &quot;not_index&quot;);
+Local&lt;Array&gt; a = Array::New(isolate);
+a-&gt;Set(0, Number::New(isolate, 10));
+a-&gt;Set(2, Number::New(isolate, 20));
+
+// get a regular property out of array passed into addon
+a-&gt;Set(1, array-&gt;Get(prop));
+</code></pre>
+<p>The code above retrieves the value of the &quot;not_index&quot; property of the array passed from JavaScript. It set&#39;s that value to be the value also stored at index 1.</p>
+<h3 id="other-data-types">Other data types</h3>
+<p>The next chapter will have a lot of examples using the primitive data types discussed above, and will delve into more of the details of working with objects and arrays. These aren&#39;t the only JavaScript data types that V8 exposes to C++ addons though. Perhaps the most important of the remaining is the <code>Function</code> object - which we&#39;ll cover in Chapter 4 and utilize extensively when we look at streaming in Chapter 7. Less commonly used (in addons) data types include <code>Date</code>, <code>RegExp</code>, and newer types just making their way into V8 like <code>Promise</code> and <code>Set</code> are also available.</p>
+<h2 id="passing-local-handles-and-using-escapable-handles">Passing Local Handles and using Escapable Handles</h2>
+<p>To this point, we&#39;ve only looked at using <code>Local</code> handle objects - which are scoped by the active <code>HandleScope</code> object. When the active <code>HandleScope</code> object is destroyed, all <code>Local</code> handles created within it are marked as deleted - which means they can no longer be used from C++ to access a storage cell. Likewise, if the <code>Local</code> is the only reference to a given storage cell, that storage cell is eligible to be garbage collected. In all of the examples above, we have a implicit <code>HandleScope</code> that is active as long as we are within the code directly called by JavaScript. This is because Node.js creates a <code>HandleScope</code> object before calling our addon.</p>
+<p>This implies that we can create <code>Local</code> handles to storage cells within our addon and pass those <code>Local</code> handles to different functions.</p>
+<pre><code class="lang-cpp">Local&lt;Value&gt; make_return(Isolate * isolate, const Local&lt;Object&gt; input ) {
+    Local&lt;String&gt; x_prop = String::NewFromUtf8(isolate, &quot;x&quot;);
+    Local&lt;String&gt; y_prop = String::NewFromUtf8(isolate, &quot;y&quot;);
+    Local&lt;String&gt; sum_prop = String::NewFromUtf8(isolate, &quot;sum&quot;);
+    Local&lt;String&gt; product_prop = String::NewFromUtf8(isolate, &quot;product&quot;);
+
+    double x = input-&gt;Get(x_prop)-&gt;NumberValue();
+    double y = input-&gt;Get(y_prop)-&gt;NumberValue();
+
+    Local&lt;Object&gt; obj = Object::New(isolate);
+    obj-&gt;Set(sum_prop, Number::New(isolate, x + y));
+    obj-&gt;Set(product_prop, Number::New(isolate, x * y));
+
+    return obj;
+}
+
+void PassObject(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+    Local&lt;Object&gt; target = args[0]-&gt;ToObject();
+
+    Local&lt;Value&gt; obj = make_return(isolate, target);
+
+    args.GetReturnValue().Set(obj);
+}
+</code></pre>
+<p>The listing above would begin with the call into <code>PassObject</code>. Prior to being called, a <code>HandleScope</code> is created by Node.js and remains active when <code>make_return</code> is called. Importantly, the <code>obj</code> handle created in <code>make_return</code> will not be destroyed when that function returns - as it belongs to the original <code>HandleScope</code> and will remain &quot;live&quot; until that scope is destroyed[3].</p>
+<p>We rarely need to consider anything but <code>Local</code> handles when dealing with simple addons that immediately (or at least directly) return to C++. An exception to this is if we for some reason create our own <code>HandleScope</code> within our addon. In these cases, we must take care when passing handles to other functions, as the <code>Local</code> handle may become invalid.</p>
+<pre><code class="lang-cpp">Local&lt;Value&gt; make_return(Isolate * isolate, const Local&lt;Object&gt; input ) {
+    .. same as above...
+
+    HandleScope scope(isolate); // DANGER!  All handles contained in this now.
+    Local&lt;Object&gt; obj = Object::New(isolate);
+    obj-&gt;Set(sum_prop, Number::New(isolate, x + y));
+    obj-&gt;Set(product_prop, Number::New(isolate, x * y));
+
+    return obj;
+}
+</code></pre>
+<p>In the case above, the creation of <code>scope</code> inside <code>make_return</code> leaves us in a dangerous situation. When <code>make_return</code> completes, the <code>scope</code> variable is destroyed, and V8 is free to delete storage cells pointed to by any handles associated with that <code>HandleScope</code> - as long as no other references exist to them. In this situation, V8 <em>could</em> garbage collect the storage cells for <code>obj</code> at the time this function returns, as there are no handles in the original <code>HandleScope</code> that refer to them.</p>
+<p>The safe way to handle these situations is to use <code>EscapeableHandle</code> to allow a <code>Local</code> handle to <em>leak</em> out to another <code>HandleScope</code>. We would create an <code>EscapableHandle</code> in <code>make_return</code> and explicitly allow our returned handle to survive.</p>
+<pre><code class="lang-cpp">Local&lt;Value&gt; make_return(Isolate * isolate, const Local&lt;Object&gt; input ) {
+    .. same as above...
+
+    EscapableHandleScope scope(isolate);
+
+    Local&lt;Object&gt; obj = Object::New(isolate);
+    obj-&gt;Set(sum_prop, Number::New(isolate, x + y));
+    obj-&gt;Set(product_prop, Number::New(isolate, x * y));
+
+    return scope.Escape(obj);
+}
+</code></pre>
+<p>While the official Google documentation promotes the idea of using new <code>HandleScope</code>s or <code>EscapableHandleScope</code>s for each function, this likely only makes sense if you are doing lots of function calling, with lots of temporary allocation in V8. The use of scopes would thus limit overall V8 memory consumption by allowing it to aggressively collect dead storage between function calls. While developing the &quot;average&quot; Node.js addon though, this is most likely overkill - you do not need to feel obligated to use a new <code>scope</code> in each function call if you are only using very small amounts of V8 storage!</p>
+<h2 id="persistent-handles">Persistent Handles</h2>
+<p>There are use cases (as we&#39;ll see in Chapter 4) where we use asynchronous addons. In these situations, handles to data created in the C++ addon entry point will no longer be usable from other threads once the initial addon entry point has returned - since the <code>HandleScope</code> will be destroyed. Anytime we wish to hold on to references to storage cells beyond the scope of an addon&#39;s entry point we must consider using a completely different type of handle - <code>Persistent</code>. <code>Persistent</code> handles are not scoped to a <code>HandleScope</code> - you have complete control over when the handle will be destroyed/invalidated.</p>
+<p>While this is most useful in asynchronous addon development, we can simulate a use case for <code>Persistent</code> handles by developing an addon that gets initialized with a JavaScript variable and holds on to the variable over the course of it&#39;s entire lifetime - spanning multiple calls into the addon from JavaScript.</p>
+<p>For example, suppose we had an addon that could be used like this:</p>
+<pre><code class="lang-javascript">var target = {  x: 3  };
+
+addon.init(target, 10);
+console.log(target);
+
+for ( var i = 0; i &lt; 3; i++ ) {
+    addon.increment();
+    console.log(target);    
+}
+</code></pre>
+<p>This addon stores state - we initialize it by calling <code>init</code> and passing in an object with a numeric property called <code>x</code> and a desired increment value - in this case <code>10</code>. Subsequent calls to <code>increment</code> will increment <code>x</code> by <code>10</code>. It&#39;s a silly example - but it demonstrates an addon that is holding a reference to V8 objects (<code>target</code>) for longer than a given function call into it. The output of the code would be something like this:</p>
+<pre><code class="lang-bash">{ x: 3 }
+{ x: 13 }
+{ x: 23 }
+{ x: 33 }
+</code></pre>
+<p>The key to making this work is <code>Persistent</code> handles. Let&#39;s look at the associated addon code.</p>
+<pre><code class="lang-cpp">Persistent&lt;Object&gt; persist;
+int increment;
+
+void Increment(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+    Local&lt;Object&gt; target = Local&lt;Object&gt;::New(isolate, persist);
+    Local&lt;String&gt; prop = String::NewFromUtf8(isolate, &quot;x&quot;);
+    double x = target-&gt;Get(prop)-&gt;NumberValue();
+    target-&gt;Set(prop, Number::New(isolate, x + increment));
+}
+void Initialize(const FunctionCallbackInfo&lt;Value&gt;&amp; args) {
+    Isolate * isolate = args.GetIsolate();
+
+    // set global variables so they survive returning from this call
+    persist.Reset(isolate, args[0]-&gt;ToObject());
+    increment = args[1]-&gt;NumberValue();
+}
+</code></pre>
+<p><code>Persistent</code> handles have very strict rules - they cannot be copied for any reason, and you must explicitly free/change their storage cells through a call to <code>Reset</code>. The <code>Initialize</code> (initialize in JS) function takes the first argument (a <code>Local&lt;Object&gt;</code>) and creates a new <code>Persistent</code> handle on line 15. Note that <code>persist</code> is actually a global variable though - so it remains in scope even when <code>Initialize</code> returns. We do something similar with <code>increment</code> on line 16, but in this case we don&#39;t hold a V8 reference - just a C++ variable.</p>
+<p>Subsequent calls into <code>Increment</code> now convert <code>persist</code> into a <code>Local</code> handle. This is required because the API for <code>Persistent</code> handle is quite limited (in past versions of V8 it was a subclass of <code>Handle</code>, but it no longer is). From there, we modify the <code>target</code> in the same way we&#39;ve done previously. Note that since <code>persist</code> still points to the same thing <code>target</code> does - the reference is preserved over many calls to <code>Increment</code>.</p>
+<p>While this makes for a nice little toy example, it&#39;s not likely that you&#39;ll be using lots of <code>Persistent</code> handles in simple synchronous addons - holding state inside your addons is likely an anti-pattern - as it promotes programming by side-effect. In this case, you&#39;d be better off passing the object and increment into the <code>increment</code> function each time you call it. As we begin to look at asynchronous addons however, this persistent concept will be incredibly valuable.</p>
+<p>[1] Specifically, the reason it&#39;s impossible is because Node locks it&#39;s isolate using <code>V8::Locker</code> before entering it&#39;s main message pump loop, and never relinquishes it. If you attempt to unlock (using <code>V8::Unlocker</code>) from the event-loop thread, Node will never attempt to re-acquire the lock and you&#39;ll crash the program. At time of this writing, you can plainly see this taking place in <code>StartNodeInstance</code> within <code>node.cc</code> in Node&#39;s source code - found at <a href="https://github.com/nodejs/node/blob/master/src/node.cc">https://github.com/nodejs</a></p>
+<p>[2] It is, in fact, not that odd. Values in JavaScript can be cast to different primitives in a lot of ways. It actually makes a lot of sense that the responsibility for casting a value into a specified primitive rests with <code>v8::Value</code>. Unlike C++ - there is no &quot;true&quot; type that we should be casting to given a value. An instance of Value is legitimate, and it can be transformed into something like a number or string on demand.</p>
+<p>[3] Note that we&#39;re using the term &quot;destroyed&quot; a bit loosely. V8 doesn&#39;t change C++, the actual <code>Local&lt;Object&gt;</code> created in <code>make_return</code> is a best thought of as a pointer. The pointer itself is of course destroyed when <code>make_return</code> returns, along with the other C++ stack variables. The storage cell pointed to by <code>obj</code> is not deleted however - it is only deleted when the <code>HandleScope</code> is destroyed. In this way, you can think of a <code>Local</code> handle as a smart pointer - one whose memory (storage cell) will be garbage collected when <code>HandleScope</code> goes out of scope - not the <code>Handle</code>.</p>
+<p><a href="ch03.html">Next Chapter</a><br><a href="index.html">Table of Contents</a></p>
+</body></html>
