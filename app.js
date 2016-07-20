@@ -1,3 +1,5 @@
+require('./boostrap/boostrap');
+
 var express = require('express.io');
 var path = require('path');
 var favicon = require('serve-favicon');
@@ -10,8 +12,8 @@ var log = require('./utils/log');
 var app = express();
 app.http().io();
 
-if (!__dirname) var __dirname = '';
 global.__appname = __dirname + '/';
+global.__env = app.get('env');
 
 // view engine setup
 app.set('views', path.join(__dirname, 'views'));
@@ -25,6 +27,10 @@ app.use(cookieParser(), null);
 app.use(less(path.join(__dirname, 'public')), null);
 app.use(express.static(path.join(__dirname, 'public')), null);
 app.use('/bower', express.static(__dirname + '/bower_components'));
+
+// authenticate
+var authLogic = require('./routes/auth/logic');
+app.all('*', authLogic.interceptRequest);
 
 // index
 var routes = require('./routes/index');
@@ -51,9 +57,8 @@ app.use('/up_down', upndown);
 var faster5 = require('./routes/faster5/faster5');
 var faster5Api = require('./routes/faster5/api');
 var faster5Socket = require('./routes/faster5/socket');
-app.use('/faster5/api', faster5Api);
 app.use('/faster5', faster5);
-app.use('/faster_5', faster5);
+app.use('/faster5/api', faster5Api);
 app.io.route('faster5', faster5Socket);
 
 // 404 must below all of other routes.

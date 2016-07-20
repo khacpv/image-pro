@@ -7,6 +7,8 @@
  * */
 var express = require('express');
 var logic = require('./logic');
+var log = require(__appname + '/utils/log.js');
+var mongoLogic = require( __appname + '/mongodb/logic');
 var router = express.Router();
 
 router.get('/topic', function (req, res, next) {
@@ -16,8 +18,8 @@ router.get('/topic', function (req, res, next) {
 });
 
 router.get('/topic/:id', function (req, res, next) {
-    logic.getTopicById(req.params.id, function(err, data){
-        if(err){
+    logic.getTopicById(req.params.id, function (err, data) {
+        if (err) {
             res.status(err);
             next();
             return;
@@ -27,14 +29,25 @@ router.get('/topic/:id', function (req, res, next) {
 });
 
 router.get('/topic/:id/question', function (req, res, next) {
-    logic.getQuestionsByTopicId(req.params.id, function(err, data){
-        if(err){
+    logic.getQuestionsByTopicId(req.params.id, function (err, data) {
+        if (err) {
             res.status(404);
             next();
             return;
         }
         res.json(data);
     });
+});
+
+router.post('/registration', function (req, res, next) {
+    mongoLogic.addToken(req.body.fb_id);
+    res.send({test:'test'});
+});
+
+router.post('/login', function (req, res, next) {
+    console.log('body:name:'+req.body.name);
+    console.log('body:age:'+req.body.age);
+    res.send({test:'test'});
 });
 
 module.exports = router;
