@@ -7,6 +7,8 @@
  * */
 var express = require('express');
 var router = express.Router();
+var log = require(__appname+'/utils/log');
+var time = require(__appname+'/utils/time');
 var logic = require('./logic');
 
 // views

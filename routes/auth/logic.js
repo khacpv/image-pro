@@ -3,6 +3,7 @@ var mongoLogic = require(__appname + '/mongodb/logic');
 var authLogic = {};
 
 var publicUrls = [
+    '',
     'login',
     'registration'
 ];
