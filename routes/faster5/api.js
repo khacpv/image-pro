@@ -46,8 +46,13 @@ router.post('/registration', function (req, res, next) {
 
 router.post('/login', function (req, res, next) {
     console.log('body:name:'+req.body.name);
-    console.log('body:age:'+req.body.age);
-    res.send({test:'test'});
+    console.log('body:pass:'+req.body.pass);
+    res.send({token:'my_token_value'});
+});
+
+router.post('/logout', function(req, res, next){
+    console.log('user logout');
+    res.send('success');
 });
 
 module.exports = router;

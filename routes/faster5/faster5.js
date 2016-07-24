@@ -12,10 +12,9 @@ var time = require(__appname+'/utils/time');
 var logic = require('./logic');
 
 // views
-
 router.get('/', function (req, res, next) {
     log.info('faster5 homepage: ' + time.millisecond());
-    res.render('games/faster5', {title: 'Faster5'})
+    res.render('faster5/faster5', {title: 'Faster5'})
 });
 
 module.exports = router;
