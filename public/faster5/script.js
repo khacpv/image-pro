@@ -11,14 +11,6 @@ App.user = {
     token: ''
 };
 
-const ACTION_DRAW = 'faster5:draw';
-
-App.socket.on(ACTION_DRAW, App.draw);
-
-App.socket.send = function (data) {
-    App.socket.emit(ACTION_DRAW, data);
-};
-
 App.login = function () {
     var name = $('#name').val();
     var pass = $('#pass').val();
@@ -64,7 +56,10 @@ $(function () {
             y: (e.clientY - offset.top),
             type: e.handleObj.type
         };
-        App.draw(data); // Draw yourself.
-        App.socket.send(data);
+        App.draw(data);
+        App.socket.emit('faster5:draw', data);
     });
 });
+
+// register socket
+App.socket.on('faster5:draw', App.draw);
