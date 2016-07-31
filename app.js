@@ -14,6 +14,7 @@ app.http().io();
 
 global.__appname = __dirname + '/';
 global.__env = app.get('env');
+global.__io = app.io;
 
 // view engine setup
 app.set('views', path.join(__dirname, 'views'));
@@ -27,6 +28,7 @@ app.use(cookieParser(), null);
 app.use(less(path.join(__dirname, 'public')), null);
 app.use(express.static(path.join(__dirname, 'public')), null);
 app.use('/bower', express.static(__dirname + '/bower_components'));
+app.use(express.session({secret: 'express.io makes me very happy'}));
 
 // authenticate
 var authLogic = require('./routes/auth/logic');

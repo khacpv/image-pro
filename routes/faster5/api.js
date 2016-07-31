@@ -45,14 +45,15 @@ router.post('/registration', function (req, res, next) {
 });
 
 router.post('/login', function (req, res, next) {
-    console.log('body:name:'+req.body.name);
-    console.log('body:pass:'+req.body.pass);
-    res.send({token:'my_token_value'});
+    //console.log('body:name:'+req.body.name);
+    //console.log('body:address:'+req.body.address);
+
+    res.send({token:'token:'+req.body.name+req.body.address});
 });
 
 router.post('/logout', function(req, res, next){
     console.log('user logout');
-    res.send('success');
+    res.send('login success');
 });
 
 module.exports = router;
