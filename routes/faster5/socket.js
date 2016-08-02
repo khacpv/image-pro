@@ -229,6 +229,11 @@ faster5.gameOver = function(req){
     __io.room(room.id).broadcast('faster5:gameOver',data);
 };
 
+faster5.ping = function(req){
+    var data = req.data.count | 0;
+    req.io.emit('faster5:ping',{count: data+1});
+};
+
 faster5.draw = function (req) {
     req.io.broadcast(faster5.baseUrl + ':draw', req.data);
 };

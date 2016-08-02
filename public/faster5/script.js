@@ -158,6 +158,10 @@ App.logout = function () {
     })
 };
 
+App.pingCallback = function(data){
+    log('ping count: '+data.count);
+};
+
 App.draw = function (data) {
     if (data.type == "dragstart") {
         App.ctx.beginPath();
@@ -184,6 +188,8 @@ $(function () {
         App.draw(data);
         App.socket.emit('faster5:draw', data);
     });
+
+    App.socket.emit('faster5:ping',{count: 3});
 });
 
 var log = function (value) {
@@ -198,3 +204,4 @@ App.socket.on('faster5:play', App.playCallback);
 App.socket.on('faster5:answer', App.answerCallback);
 App.socket.on('faster5:answerNext', App.answerNextCallback);
 App.socket.on('faster5:gameOver', App.gameOverCallback);
+App.socket.on('faster5:ping', App.pingCallback);
