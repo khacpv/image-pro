@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html id="ng-app" ng-app="oicApp" lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>OIC MAP</title>
+
+  <!-- CSS -->
+  <link href=vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+  <!--<link rel="stylesheet" type="text/css" href="//www.dreamtemplate.com/dreamcodes/social_icons/tsc_social_icons.css" />-->
+
+  <link rel="stylesheet" type="text/css" href="css/main.css">
+  <link rel="stylesheet" type="text/css" href="css/value.home.app.css">
+  <link rel="stylesheet" type="text/css" href="css/summary.home.app.css">
+  <link rel="stylesheet" type="text/css" href="css/features.home.app.css">
+  <link rel="stylesheet" type="text/css" href="css/testimonials.home.app.css">
+  <link rel="stylesheet" type="text/css" href="css/notify.home.app.css">
+  <link rel="stylesheet" type="text/css" href="css/social.home.app.css">
+  <link rel="stylesheet" type="text/css" href="css/responsive.css">
+
+  <!-- JS -->
+  <script src=vendor/jquery/jquery-1.11.2.min.js"></script>
+
+  <!-- HTML5 shim and Respond.js for IE8 support of HTML5 elements and media queries -->
+  <!-- WARNING: Respond.js doesn't work if you view the page via file:// -->
+  <!--[if lt IE 9]>
+  <script src="https://oss.maxcdn.com/html5shiv/3.7.2/html5shiv.min.js"></script>
+  <script src="https://oss.maxcdn.com/respond/1.4.2/respond.min.js"></script>
+  <![endif]-->
+
+  <!--<base href="/frontend/"/>-->
+</head>
+<body ng-controller="oicController">
+<div ui-view="nav"></div>
+<div ui-view="home"></div>
+
+<!-- vendors -->
+<script src="vendor/angular/angular.min.js"></script>
+<script src="vendor/angular/angular-animate.min.js"></script>
+<script src="vendor/angular/angular-route.min.js"></script>
+<script src="vendor/angular/angular-resource.min.js"></script>
+<script src="vendor/angular/angular-scroll.min.js"></script>
+<script src="vendor/angular/angular-sanitize.min.js"></script>
+<script src="vendor/angular/angular-cookies.min.js"></script>
+<script src="vendor/angular/angular-touch.min.js"></script>
+<script src="vendor/angular/angular-ui-router.min.js"></script>
+<script src="vendor/angular/ui-bootstrap-tpls-0.12.0.min.js"></script>
+<script src="vendor/tweenmax/TweenMax.min.js"></script>
+
+<!-- application -->
+<script src="app/home/home.js"></script>
+<script src="app/home/value/value.js"></script>
+<script src="app/home/summary/summary.js"></script>
+<script src="app/home/features/features.js"></script>
+<script src="app/home/testimonials/testimonials.js"></script>
+<script src="app/home/notify/notify.js"></script>
+<script src="app/home/social/social.js"></script>
+<script src="app/nav/nav.js"></script>
+<script src="app/constants.js"></script>
+<script src="app/app.js"></script>
+<!--
+<script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+
+<ins class="adsbygoogle"
+     style="display:block"
+     data-ad-client="ca-pub-7155603033286568"
+     data-ad-slot="5380864338"
+     data-ad-format="auto"></ins>
+<script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+-->
+</body>
+</html>
