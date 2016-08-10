@@ -22,7 +22,7 @@ var ip = process.env.OPENSHIFT_NODEJS_IP || '127.0.0.1';
  * Listen on provided port, on all network interfaces.
  */
 
-app.listen(port, ip);
+var server = app.listen(port, ip);
 app.on('error', onError);
 app.on('listening', onListening);
 
