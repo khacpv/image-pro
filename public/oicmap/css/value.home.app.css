@@ -1,0 +1,135 @@
+.phone-wrapper{
+  margin: 0;
+  padding: 0;
+}
+.phone-bg{
+  background: url('../resources/images/smartphone.png') no-repeat 0 0;
+  width: 270px;
+  height: 600px;
+  background-size: 270px 523px;
+  margin-right: 140px;
+  margin-top: 60px;
+}
+.value .video{
+  width: 100%    !important;
+  height: auto   !important;
+}
+.screen {
+  width: 237px;
+  height: 376px;
+  margin-top: 75px;
+  overflow: hidden;
+}
+.screen img{
+  width: 237px;
+  height: 376px;
+}
+.circle-nav{
+  width: 70px;
+  height: 50px;
+  margin-top: 80px;
+  margin-right: 80px;
+  color: gray;
+  cursor: pointer;
+}
+.circle:before {
+  content: ' \25CF';
+  font-size: 25px;
+}
+.circle-nav .select{
+  color: #6EAD2C;
+}
+.logo{
+  background: url('../resources/images/oic-logo.png') no-repeat 0 0;
+  width: 475px;
+  height: 140px;
+  background-size: 105px 122px;
+  margin-top: 120px;
+  padding-left: 60px;
+  padding-top: 20px;
+  text-align: center;
+  display: inline-block;
+}
+.logo h1{
+  font-size: 4em;
+  font-weight: 400;
+  margin-left: 50px;
+  font-family: "RobotoDraft",sans-serif;
+}
+.instruction {
+  margin-top: 0;
+  margin-bottom: 40px;
+}
+.indent-center h4{
+  margin-left: 100px;
+}
+.btn-wrapper {
+  margin-bottom: 25px;
+  margin-left: 92px;
+}
+.btn-download{
+  margin-right: 70px;
+  border-radius: 2em 2em 2em 2em;
+  background: #FFFFFF;
+  width: 130px;
+  height: 44px;
+  color: #6EAD2C;
+  padding: 11px 0 0 24px;
+  outline: none;
+  border: 1px solid #6EAD2C;
+  cursor: pointer;
+  text-decoration: none;
+}
+.btn-download:hover{
+  color: #FFFFFF;
+  background: #86cc2f;
+  border: 1px solid #86CC2F;
+}
+.btn-download:active{
+  color: #FFFFFF;
+  background: #5a8f21;
+  border: 1px solid #5a8f21;
+}
+.btn-learn-more{
+  border-radius: 2em 2em 2em 2em;
+  background: white;
+  width: 130px;
+  height: 44px;
+  color: #6EAD2C;
+  padding: 11px 0 0 20px;
+  outline: none;
+  border: 1px solid #86CC2F;
+  cursor: pointer;
+}
+.btn-learn-more:hover{
+  background: #86CC2F;
+  color: white;
+}
+.btn-learn-more:active{
+  background: #86CC2F;
+  color: white;
+}
+.icon-wrapper {
+  margin-left: 90px;
+}
+.icon {
+  width: 40px;
+  height: 40px;
+  margin: 20px 10px 10px 0;
+  cursor: pointer;
+}
+.apple{
+  background: url("../resources/images/ios.png") no-repeat 0 0;
+  background-size: 30px 30px;
+  margin-top: 30px;
+}
+.android{
+  background: url("../resources/images/android.png") no-repeat 0 0;
+  background-size: 40px 40px;
+}
+.winphone{
+  background: url("../resources/images/windows.png") no-repeat 0 0;
+  background-size: 30px 30px;
+  margin-left: 12px;
+  margin-top: 30px;
+}

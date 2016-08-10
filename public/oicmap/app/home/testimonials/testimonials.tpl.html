@@ -1,0 +1,41 @@
+<div ng-controller="testimonialsController" class="testimonials col-md-12 left">
+  <div class="quote-symbol">
+    <h1 ><div class="quote-img"></div></h1>
+  </div>
+  <div class="quote">
+    <h3 ng-bind-html="comments[currentComment].comment"></h3>
+  </div>
+  <div class="contact col-md-12">
+    <div class="middle">
+      <div class="item left mentor-thang">
+        <div class="title left col-md-12" ng-click="selectComment(0)">
+          Nguyen Manh Thang
+        </div>
+        <div class="description left">
+          Former PM of <a href="//www.vingroup.net">VINECOM</a>
+        </div>
+      </div>
+      <div class="item left mentor-phong">
+        <div class="title left col-md-12" ng-click="selectComment(1)">
+          Bui Sy Phong
+        </div>
+        <div class="description left">
+          Founder of <a href="//ononpay.com">ONONPAY</a>
+        </div>
+      </div>
+      <div class="item left mentor-thang-2">
+        <div class="title left col-md-12" ng-click="selectComment(2)">
+          Ph.D Hoang Manh Thang
+        </div>
+        <div class="description left">
+          Former PM, <br>Faculty of <a href="http://cdit.ptit.edu.vn/">PTIT</a>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="circle-nav middle respon990">
+    <span class="circle" ng-class="{'select':currentComment === 0}" ng-click="selectComment(0)"></span>
+    <span class="circle" ng-class="{'select':currentComment === 1}" ng-click="selectComment(1)"></span>
+    <span class="circle" ng-class="{'select':currentComment === 2}" ng-click="selectComment(2)"></span>
+  </div>
+</div>

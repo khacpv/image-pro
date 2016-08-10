@@ -1,0 +1,54 @@
+.feature {
+  background: #f3f5f5;
+}
+.feature-left {
+  position: relative;
+  height: 400px;
+  margin: 50px 0 50px 0;
+  padding-right: 30px;
+}
+.feature-right{
+  padding: 20px 0 0 10px;
+}
+.feature-left .back{
+  position: absolute;
+  right: 290px;
+  top: 50px;
+  width: 209px;
+  height: 301px;
+}
+.feature-left .front{
+  position: absolute;
+  right: 142px;
+  width: 237px;
+  height: 390px;
+}
+.feature-left .circle-nav{
+  position: absolute;
+  bottom: -50px;
+  right: 90px;
+}
+.item-feature{
+  padding: 15px 0 15px 70px;
+}
+.ruler {
+  background: url("../resources/images/ruler.png") no-repeat 0 20px;
+}
+.tool {
+  background: url("../resources/images/tool.png") no-repeat 0 20px;
+}
+.position {
+  background: url("../resources/images/position.png") no-repeat 0 20px;
+}
+.lost-child {
+  background: url("../resources/images/lost-child.png") no-repeat 0 20px;
+}
+
+.feature-right .title {
+  color: #6EAD2C;
+  font-size: 20px;
+}
+.feature-right .description {
+  color: #686868;
+  margin-top: 5px;
+}

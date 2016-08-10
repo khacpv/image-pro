@@ -1,0 +1,65 @@
+.testimonials .quote-symbol{
+  text-align: center;
+  height: 64px;
+  margin: 30px;
+}
+.testimonials h1 {
+  color: #6EAD2C;
+  margin: 0 auto;
+  font-size: 100px;
+  width: 100px;
+  height: 60px;
+}
+.quote-img {
+  width: 64px;
+  height: 64px;
+  background-size: 64px;
+  background: url("../resources/images/quote_2.png") no-repeat 0 0;
+}
+.testimonials .contact {
+  margin: 0 auto;
+}
+
+.testimonials .quote h3 {
+  color: #D36172;
+  margin: 0 auto;
+  width: 80%;
+  text-align: center;
+  padding: 0 0 50px 0;
+  line-height: 25px;
+  font-size: 20px;
+}
+
+.testimonials .item {
+  padding: 3px 0 0 80px;
+  height: 75px;
+  width: 280px;
+  margin: 0 30px;
+}
+.mentor-thang {
+  background: url("../resources/images/thang.png") no-repeat 0 0;
+  background-size: 64px 64px;
+}
+.mentor-phong {
+  background: url("../resources/images/phong.png") no-repeat 0 0;
+  background-size: 64px 64px;
+}
+.mentor-thang-2 {
+  background: url("../resources/images/thang_1.jpg") no-repeat 0 0;
+  background-size: 64px 64px;
+}
+
+.testimonials .description{
+  font-size: 1em;
+  width: 254px;
+  color: #686868;
+}
+
+.testimonials .item .title {
+  color: #6EAD2C;
+  font-size: 16px;
+  cursor: pointer;
+}
+.testimonials .circle-nav{
+  margin: 100px auto 20px auto;
+}

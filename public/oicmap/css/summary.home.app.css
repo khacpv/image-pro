@@ -1,0 +1,47 @@
+.summary-wrapper h1{
+  margin: 30px 0;
+}
+.summary-wrapper {
+  background: #6EAD2C;
+  color: #ffffff;
+  padding-bottom: 40px;
+}
+.summary-wrapper .message{
+  line-height: 38px;
+}
+.detail-wrapper {
+  width: 980px;
+  float: none;
+  margin: 0 auto;
+  min-height: 200px;
+}
+
+.item {
+  float: left;
+  height: 211px;
+  width: 206px;
+  padding-top: 66px;
+  display: inline-block;
+  margin: 0 60px;
+}
+
+.item .title {
+
+}
+
+.item .description {
+  font-size: 1em;
+  width: 220px;
+}
+
+.smart {
+  background: url('../resources/images/smart.png') no-repeat 60px 0;
+}
+
+.convenient {
+  background: url('../resources/images/convenient.png') no-repeat 57px 0;
+}
+
+.reliable {
+  background: url('../resources/images/reliable.png') no-repeat 70px 0;
+}

@@ -1,0 +1,66 @@
+.respon640{
+  display: none;
+}
+.respon990{
+  display: block;
+}
+@media only screen and (max-width: 640px) {
+  .phone-wrapper{
+    margin: 0 auto;
+    float: none;
+  }
+  .logo {
+    margin: 30px 0 0 20px;
+  }
+  .summary-wrapper .item{
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    display: block;
+  }
+  .summary-wrapper .item .title{
+    margin-left: 183px;
+    text-align: left;
+  }
+  .summary-wrapper .item .description{
+    width: auto;
+    margin-left: 183px;
+    margin-top: -21px;
+    height: 86px;
+  }
+
+  .feature-left{
+    width: 100%;
+    margin-left: 80px;
+  }
+  .feature-right{
+    padding: 0 0 30px 80px;
+  }
+  .feature h1{
+    margin: 30px;
+  }
+  .testimonials .item{
+    padding: 0 0 0 75px;
+    width: auto;
+    height: 120px;
+
+  }
+  .testimonials .contact{
+    margin-left: 130px;
+  }
+  .notify{
+    width: 100%;
+  }
+  .notify h4{
+    margin: 0 55px;
+  }
+  .social{
+    width: 100%;
+  }
+  .respon640 {
+    display: block;
+  }
+  .respon990{
+    display: none;
+  }
+}

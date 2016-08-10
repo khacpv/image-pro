@@ -1,0 +1,48 @@
+<div ng-controller="valueController" class="value col-md-12">
+  <div class="logo col-md-12 left  text-color base respon640">
+    <h1>Finding Time!</h1>
+  </div>
+  <div class="phone-wrapper col-md-6 left">
+    <div class="phone-bg col-md-6 right" >
+      <div class="screen right slider" ng-click="clearInterval()">
+        <video width="240" height="376" autoplay loop class="video">
+          <source src="oicmap/assets/video/oic.mp4" type="video/mp4">
+          <source src="oicmap/assets/video/oic.mp4" type="video/ogg">
+          Your browser does not support HTML5 video.
+        </video>
+        <!--<img ng-repeat="phoneUrl in phoneUrls" alt="loading..." ng-src="{{ phoneUrl }}" class="slide slide-animation nonDraggableImage" ng-hide="!isCurrentSlideIndex($index)">-->
+      </div>
+      <div class="circle-nav right" >
+        <span ng-repeat="itemCircle in phoneUrls"  class="circle animation" ng-class="{'select':currentIndex==$index}" ng-click="setCurrentSlideIndex($index);"></span>
+      </div>
+    </div>
+
+  </div>
+  <div class="col-md-6 left">
+    <div class="logo col-md-12 left  text-color base respon990">
+      <h1>Finding Time!</h1>
+    </div>
+    <div class="col-md-12 left text-color gray instruction">
+      <span class="col-md-12">
+        <h3>Perfect application that makes your everyday life</h3>
+      </span>
+      <br class="respon990">
+      <span class="indent-center">
+        <h3>so much easier!</h3>
+      </span>
+    </div>
+    <div class="col-md-12 left btn-wrapper">
+		<a style="display:none;" class="left" style="margin-right:100px;" target="_blank" href="https://play.google.com/store/apps/details?id=com.oic.sdk">
+		  <img alt="Android app on Google Play"
+			   src="https://developer.android.com/images/brand/en_app_rgb_wo_45.png" />
+		</a>
+		<a class="left btn-download" href="http://download.oicmap.com/app/android.apk" title="Beta version">DOWNLOAD</a>
+		<a class="left btn-learn-more" ng-click="scrollTo('summary')">LEARN MORE</a>
+    </div>
+    <div class="col-md-12 left icon-wrapper">
+      <a class="icon apple left"></a>
+      <a class="icon android left" target="_blank" ng-click="iconClick('android')"></a>
+      <a class="icon winphone left"></a>
+    </div>
+  </div>
+</div>
