@@ -28,6 +28,7 @@ app.use(cookieParser(), null);
 app.use(less(path.join(__dirname, 'public')), null);
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/bower', express.static(__dirname + '/bower_components'));
+app.use('/oicmap', express.static(__dirname + '/oicmap'));
 app.use(express.session({secret: 'express.io makes me very happy'}));
 
 // authenticate
